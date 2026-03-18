@@ -1,0 +1,44 @@
+## ADDED Requirements
+
+### Requirement: DVC initialization
+The repository SHALL be initialized with DVC (`dvc init`) and the resulting `.dvc/` directory SHALL be committed to version control.
+
+#### Scenario: Fresh DVC init
+- **WHEN** a developer clones the repository
+- **THEN** the `.dvc/` configuration directory SHALL be present and DVC commands SHALL work without re-initialization
+
+### Requirement: Five-stage DVC pipeline
+The `dvc.yaml` file SHALL define five stages: `extract_subset`, `joern_export`, `embed_code`, `embed_cve`, and `train`. Each stage SHALL declare its command, dependencies, and outputs.
+
+#### Scenario: Full pipeline execution
+- **WHEN** `dvc repro` is run from the project root
+- **THEN** all five stages SHALL execute in dependency order, skipping any stage whose dependencies have not changed since the last run
+
+#### Scenario: Partial re-execution
+- **WHEN** only the training script is modified
+- **THEN** `dvc repro` SHALL re-run only the `train` stage and skip all upstream stages
+
+### Requirement: Stage dependency graph
+The stages SHALL encode the following dependency relationships:
+- `joern_export` depends on `extract_subset`
+- `embed_code` depends on `joern_export`
+- `embed_cve` depends on `extract_subset`
+- `train` depends on `embed_code` and `embed_cve`
+
+#### Scenario: Parallel-eligible stages
+- **WHEN** `extract_subset` completes
+- **THEN** `joern_export` and `embed_cve` SHALL be eligible to run, as they have no mutual dependency
+
+### Requirement: DVC-tracked outputs
+Each stage SHALL declare its output artifacts so DVC can track them. The `.gitignore` SHALL be updated to exclude DVC-tracked data directories (`data/`) while keeping `.dvc` and `dvc.yaml` / `dvc.lock` under version control.
+
+#### Scenario: Git status after pipeline run
+- **WHEN** `dvc repro` completes and the user runs `git status`
+- **THEN** `data/` contents SHALL NOT appear as untracked files, but `dvc.lock` changes SHALL appear as modified
+
+### Requirement: Metrics tracking via DVC
+The `train` stage SHALL declare a metrics file (`data/metrics.json`) that DVC tracks, enabling `dvc metrics show` and `dvc metrics diff`.
+
+#### Scenario: View metrics after training
+- **WHEN** the user runs `dvc metrics show` after a training run
+- **THEN** the output SHALL display the best validation accuracy, precision, recall, and F1 from the training run

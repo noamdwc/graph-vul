@@ -53,5 +53,12 @@ def extract_subset(
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    extract_subset()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Extract CWE-119 subset from Big-Vul")
+    parser.add_argument("--input", type=str, default=None, help="Path to Big-Vul CSV")
+    parser.add_argument("--output", type=str, default=None, help="Path to output subset CSV")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    extract_subset(input_csv=args.input, output_csv=args.output)

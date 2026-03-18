@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Data artifacts (tracked by DVC)
+/data/
+
+# W&B
+wandb/
+
+# IDE
+.vscode/
+.idea/

@@ -100,5 +100,12 @@ def _run_joern(func_code: str, output_dir: Path) -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    export_cpgs()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Export CPGs via Joern CLI")
+    parser.add_argument("--input", type=str, default=None, help="Path to subset CSV")
+    parser.add_argument("--output", type=str, default=None, help="Output directory for CPG exports")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    export_cpgs(subset_csv=args.input, output_dir=args.output)

@@ -1,11 +1,13 @@
-"""Training loop for GraphVul model."""
+"""Training loop for GraphVul model with W&B experiment tracking."""
 
 import argparse
+import json
 import logging
 import random
 
 import numpy as np
 import torch
+import wandb
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from torch_geometric.loader import DataLoader
@@ -13,6 +15,8 @@ from torch_geometric.loader import DataLoader
 from graph_vul.config import (
     BATCH_SIZE,
     CHECKPOINT_PATH,
+    DATA_DIR,
+    GAT_HIDDEN_DIM,
     LEARNING_RATE,
     NUM_EPOCHS,
     SEED,
@@ -22,6 +26,8 @@ from graph_vul.dataset.cpg_dataset import CPGDataset
 from graph_vul.model.classifier import GraphVulModel
 
 logger = logging.getLogger(__name__)
+
+METRICS_PATH = DATA_DIR / "metrics.json"
 
 
 def seed_everything(seed: int) -> None:
@@ -45,6 +51,33 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Using device: %s", device)
 
+    # Initialize W&B
+    wandb.init(
+        project="graph-vul",
+        config={
+            "learning_rate": lr,
+            "gat_hidden_channels": GAT_HIDDEN_DIM,
+            "epochs": num_epochs,
+            "batch_size": batch_size,
+            "seed": seed,
+        },
+    )
+
+    try:
+        _train_loop(num_epochs, batch_size, lr, seed, device)
+    except KeyboardInterrupt:
+        logger.info("Training interrupted by user")
+    finally:
+        wandb.finish()
+
+
+def _train_loop(
+    num_epochs: int,
+    batch_size: int,
+    lr: float,
+    seed: int,
+    device: torch.device,
+) -> None:
     # Load dataset
     dataset = CPGDataset()
     labels = [int(dataset.get(i).y.item()) for i in range(len(dataset))]
@@ -71,6 +104,7 @@ def train(
     criterion = torch.nn.BCEWithLogitsLoss()
 
     best_f1 = 0.0
+    best_metrics: dict[str, float] = {}
 
     for epoch in range(1, num_epochs + 1):
         # Training
@@ -113,14 +147,39 @@ def train(
             metrics["f1"],
         )
 
+        # Log to W&B
+        wandb.log(
+            {
+                "train_loss": avg_loss,
+                "val_loss": metrics.get("val_loss", avg_loss),
+                "accuracy": metrics["accuracy"],
+                "precision": metrics["precision"],
+                "recall": metrics["recall"],
+                "f1": metrics["f1"],
+            },
+            step=epoch,
+        )
+
         # Checkpoint on F1 improvement
         if metrics["f1"] > best_f1:
             best_f1 = metrics["f1"]
+            best_metrics = {
+                "accuracy": metrics["accuracy"],
+                "precision": metrics["precision"],
+                "recall": metrics["recall"],
+                "f1": metrics["f1"],
+            }
             CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), CHECKPOINT_PATH)
             logger.info("Saved best model (F1=%.4f) to %s", best_f1, CHECKPOINT_PATH)
 
     logger.info("Training complete. Best validation F1: %.4f", best_f1)
+
+    # Write metrics JSON for DVC
+    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(METRICS_PATH, "w") as f:
+        json.dump(best_metrics, f, indent=2)
+    logger.info("Wrote metrics to %s", METRICS_PATH)
 
 
 @torch.no_grad()

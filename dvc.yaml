@@ -1,0 +1,50 @@
+stages:
+  extract_subset:
+    cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv --output data/subset_cwe119.csv
+    deps:
+      - data/bigvul.csv
+      - graph_vul/pipeline/extract_subset.py
+    outs:
+      - data/subset_cwe119.csv
+
+  joern_export:
+    cmd: python -m graph_vul.pipeline.joern_export --input data/subset_cwe119.csv --output data/raw
+    deps:
+      - data/subset_cwe119.csv
+      - graph_vul/pipeline/joern_export.py
+    outs:
+      - data/raw
+
+  embed_code:
+    cmd: python -m graph_vul.pipeline.embed_code --input data/raw --output data/processed/code_embeddings --subset-csv data/subset_cwe119.csv
+    deps:
+      - data/raw
+      - data/subset_cwe119.csv
+      - graph_vul/pipeline/embed_code.py
+      - graph_vul/pipeline/embed_utils.py
+    outs:
+      - data/processed/code_embeddings
+
+  embed_cve:
+    cmd: python -m graph_vul.pipeline.embed_cve --input data/subset_cwe119.csv --output data/processed/cve_embeddings
+    deps:
+      - data/subset_cwe119.csv
+      - graph_vul/pipeline/embed_cve.py
+      - graph_vul/pipeline/embed_utils.py
+    outs:
+      - data/processed/cve_embeddings
+
+  train:
+    cmd: python -m graph_vul.train --epochs 50 --batch-size 32 --lr 1e-3 --seed 42
+    deps:
+      - data/processed/code_embeddings
+      - data/processed/cve_embeddings
+      - data/subset_cwe119.csv
+      - graph_vul/train.py
+      - graph_vul/dataset/cpg_dataset.py
+      - graph_vul/model/
+    outs:
+      - data/best_model.pt
+    metrics:
+      - data/metrics.json:
+          cache: false
