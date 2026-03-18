@@ -1,4 +1,11 @@
 stages:
+  data_ingestion:
+    cmd: python scripts/download_bigvul.py
+    deps:
+      - scripts/download_bigvul.py
+    outs:
+      - data/bigvul.csv
+
   extract_subset:
     cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv --output data/subset_cwe119.csv
     deps:
