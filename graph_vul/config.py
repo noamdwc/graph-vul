@@ -7,7 +7,7 @@ RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 BIGVUL_CSV = DATA_DIR / "bigvul.csv"
 SUBSET_CSV = DATA_DIR / "subset_cwe119.csv"
-CHECKPOINT_PATH = DATA_DIR / "best_model.pt"
+CHECKPOINT_PATH = DATA_DIR / "best_model.ckpt"
 
 # Data pipeline
 CWE_ID = "CWE-119"
@@ -31,5 +31,7 @@ MLP_DROPOUT = 0.3
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 NUM_EPOCHS = 50
-VAL_SPLIT = 0.2
+VAL_SPLIT = 0.15
+TEST_SPLIT = 0.15
+SPLITS_DIR = DATA_DIR / "splits"
 SEED = 42

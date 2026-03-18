@@ -34,17 +34,25 @@ stages:
     outs:
       - data/processed/cve_embeddings
 
+  split_data:
+    cmd: python -m graph_vul.pipeline.split_data --input data/subset_cwe119.csv --output data/splits --seed 42
+    deps:
+      - data/subset_cwe119.csv
+      - graph_vul/pipeline/split_data.py
+    outs:
+      - data/splits
+
   train:
     cmd: python -m graph_vul.train --epochs 50 --batch-size 32 --lr 1e-3 --seed 42
     deps:
       - data/processed/code_embeddings
       - data/processed/cve_embeddings
-      - data/subset_cwe119.csv
+      - data/splits
       - graph_vul/train.py
       - graph_vul/dataset/cpg_dataset.py
       - graph_vul/model/
     outs:
-      - data/best_model.pt
+      - data/best_model.ckpt
     metrics:
       - data/metrics.json:
           cache: false

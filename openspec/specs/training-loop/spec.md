@@ -1,35 +1,33 @@
-## ADDED Requirements
-
 ### Requirement: Train/validation split
-The training script SHALL split the dataset into training and validation sets using a stratified split (preserving label balance). The default split ratio SHALL be 80/20.
+The training script SHALL load pre-computed split indices from `data/splits/train.json` and `data/splits/val.json` instead of performing an inline `train_test_split`. The split files SHALL be produced by the upstream `split_data` DVC stage.
 
 #### Scenario: Stratified split
-- **WHEN** the dataset is loaded with N samples
-- **THEN** the training set SHALL contain ~80% of samples and the validation set ~20%, with approximately equal label ratios in both splits
+- **WHEN** the training script starts
+- **THEN** it SHALL read `data/splits/train.json` and `data/splits/val.json`, and use those indices to construct the training and validation DataLoaders
 
 ### Requirement: Training loop with BCE loss
-The training script SHALL run a configurable number of epochs, each consisting of a full pass over the training set using mini-batches. The loss function SHALL be Binary Cross-Entropy with logits (BCEWithLogitsLoss). Additionally, the training script SHALL log per-epoch train loss and validation metrics to W&B.
+The training loop SHALL be managed by the Lightning Trainer rather than a manual for-loop. The `GraphVulLitModule.training_step` SHALL compute BCEWithLogitsLoss. Per-epoch train loss and validation metrics SHALL be logged via Lightning's `self.log()` mechanism, which routes to the configured loggers (including WandbLogger).
 
 #### Scenario: Single epoch execution
 - **WHEN** one training epoch completes
-- **THEN** the script SHALL report the mean training loss for that epoch and log it to W&B
+- **THEN** the Trainer SHALL have invoked `training_step` for each batch and the mean training loss SHALL be logged
 
 ### Requirement: Validation evaluation
-After each training epoch, the script SHALL evaluate the model on the validation set without gradient computation and report: accuracy, precision, recall, and F1 score. These metrics SHALL also be logged to W&B.
+After each training epoch, the Trainer SHALL run a validation loop calling `validation_step` on each batch without gradient computation. Validation metrics (accuracy, precision, recall, F1) SHALL be computed using `torchmetrics` and logged via `self.log()`.
 
 #### Scenario: Validation metrics reported
 - **WHEN** a validation pass completes
-- **THEN** accuracy, precision, recall, and F1 are printed to stdout for that epoch AND logged to W&B
+- **THEN** accuracy, precision, recall, and F1 SHALL be logged to all configured Lightning loggers
 
 ### Requirement: Model checkpoint saving
-The training script SHALL save the model state dict to disk whenever the validation F1 score improves over the previous best.
+The Lightning `ModelCheckpoint` callback SHALL save a full Lightning checkpoint (model state, optimizer state, epoch) whenever `val_f1` improves. The checkpoint path SHALL be `data/best_model.ckpt`.
 
 #### Scenario: Improved validation F1
 - **WHEN** the current epoch's validation F1 exceeds the best recorded F1
-- **THEN** the model checkpoint SHALL be saved to a configured path and the best F1 SHALL be updated
+- **THEN** a Lightning checkpoint SHALL be saved to `data/best_model.ckpt`
 
 ### Requirement: Reproducibility
-The training script SHALL accept a random seed parameter and use it to seed PyTorch, NumPy, and Python's random module for reproducible runs.
+The training script SHALL call `pytorch_lightning.seed_everything(seed)` to seed PyTorch, NumPy, and Python's random module, replacing the manual `seed_everything` function.
 
 #### Scenario: Deterministic training
 - **WHEN** two training runs use the same seed and data

@@ -1,43 +1,31 @@
-"""Training loop for GraphVul model with W&B experiment tracking."""
+"""Training script for GraphVul model with PyTorch Lightning."""
 
 import argparse
 import json
 import logging
-import random
 
-import numpy as np
 import torch
-import wandb
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from sklearn.model_selection import train_test_split
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
 from torch_geometric.loader import DataLoader
 
 from graph_vul.config import (
     BATCH_SIZE,
-    CHECKPOINT_PATH,
     DATA_DIR,
     GAT_HIDDEN_DIM,
     LEARNING_RATE,
     NUM_EPOCHS,
     SEED,
-    VAL_SPLIT,
+    SPLITS_DIR,
 )
 from graph_vul.dataset.cpg_dataset import CPGDataset
-from graph_vul.model.classifier import GraphVulModel
+from graph_vul.model.lit_module import GraphVulLitModule
 
 logger = logging.getLogger(__name__)
 
 METRICS_PATH = DATA_DIR / "metrics.json"
-
-
-def seed_everything(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+CHECKPOINT_PATH = DATA_DIR / "best_model.ckpt"
 
 
 def train(
@@ -46,13 +34,26 @@ def train(
     lr: float = LEARNING_RATE,
     seed: int = SEED,
 ) -> None:
-    seed_everything(seed)
+    pl.seed_everything(seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info("Using device: %s", device)
+    # Data
+    dataset = CPGDataset()
 
-    # Initialize W&B
-    wandb.init(
+    with open(SPLITS_DIR / "train.json") as f:
+        train_idx = json.load(f)
+    with open(SPLITS_DIR / "val.json") as f:
+        val_idx = json.load(f)
+
+    train_loader = DataLoader(dataset[torch.tensor(train_idx)], batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(dataset[torch.tensor(val_idx)], batch_size=batch_size, shuffle=False)
+
+    logger.info("Train: %d samples, Val: %d samples", len(train_idx), len(val_idx))
+
+    # Model
+    model = GraphVulLitModule(lr=lr)
+
+    # Logger
+    wandb_logger = WandbLogger(
         project="graph-vul",
         config={
             "learning_rate": lr,
@@ -63,155 +64,39 @@ def train(
         },
     )
 
-    try:
-        _train_loop(num_epochs, batch_size, lr, seed, device)
-    except KeyboardInterrupt:
-        logger.info("Training interrupted by user")
-    finally:
-        wandb.finish()
-
-
-def _train_loop(
-    num_epochs: int,
-    batch_size: int,
-    lr: float,
-    seed: int,
-    device: torch.device,
-) -> None:
-    # Load dataset
-    dataset = CPGDataset()
-    labels = [int(dataset.get(i).y.item()) for i in range(len(dataset))]
-
-    # Stratified train/val split
-    train_idx, val_idx = train_test_split(
-        list(range(len(dataset))),
-        test_size=VAL_SPLIT,
-        stratify=labels,
-        random_state=seed,
+    # Callbacks
+    checkpoint_cb = ModelCheckpoint(
+        dirpath=str(CHECKPOINT_PATH.parent),
+        filename="best_model",
+        monitor="val_f1",
+        mode="max",
+        save_top_k=1,
     )
 
-    train_dataset = dataset[torch.tensor(train_idx)]
-    val_dataset = dataset[torch.tensor(val_idx)]
+    # Trainer
+    trainer = pl.Trainer(
+        max_epochs=num_epochs,
+        accelerator="auto",
+        callbacks=[checkpoint_cb],
+        logger=wandb_logger,
+        deterministic=True,
+    )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
-    logger.info("Train: %d samples, Val: %d samples", len(train_idx), len(val_idx))
+    # Write DVC metrics
+    metrics = {
+        "accuracy": trainer.callback_metrics.get("val_accuracy", 0.0),
+        "precision": trainer.callback_metrics.get("val_precision", 0.0),
+        "recall": trainer.callback_metrics.get("val_recall", 0.0),
+        "f1": trainer.callback_metrics.get("val_f1", 0.0),
+    }
+    metrics = {k: float(v) for k, v in metrics.items()}
 
-    # Model, optimizer, loss
-    model = GraphVulModel().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    criterion = torch.nn.BCEWithLogitsLoss()
-
-    best_f1 = 0.0
-    best_metrics: dict[str, float] = {}
-
-    for epoch in range(1, num_epochs + 1):
-        # Training
-        model.train()
-        total_loss = 0.0
-        num_batches = 0
-
-        for batch in train_loader:
-            batch = batch.to(device)
-            optimizer.zero_grad()
-
-            logits = model(
-                x=batch.x,
-                edge_index=batch.edge_index,
-                edge_type=batch.edge_type,
-                batch=batch.batch,
-                text_vec=batch.text_vec,
-            )
-
-            loss = criterion(logits, batch.y.squeeze(-1))
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-            num_batches += 1
-
-        avg_loss = total_loss / max(num_batches, 1)
-
-        # Validation
-        metrics = evaluate(model, val_loader, device)
-
-        logger.info(
-            "Epoch %d/%d — Loss: %.4f | Acc: %.4f | Prec: %.4f | Rec: %.4f | F1: %.4f",
-            epoch,
-            num_epochs,
-            avg_loss,
-            metrics["accuracy"],
-            metrics["precision"],
-            metrics["recall"],
-            metrics["f1"],
-        )
-
-        # Log to W&B
-        wandb.log(
-            {
-                "train_loss": avg_loss,
-                "val_loss": metrics.get("val_loss", avg_loss),
-                "accuracy": metrics["accuracy"],
-                "precision": metrics["precision"],
-                "recall": metrics["recall"],
-                "f1": metrics["f1"],
-            },
-            step=epoch,
-        )
-
-        # Checkpoint on F1 improvement
-        if metrics["f1"] > best_f1:
-            best_f1 = metrics["f1"]
-            best_metrics = {
-                "accuracy": metrics["accuracy"],
-                "precision": metrics["precision"],
-                "recall": metrics["recall"],
-                "f1": metrics["f1"],
-            }
-            CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), CHECKPOINT_PATH)
-            logger.info("Saved best model (F1=%.4f) to %s", best_f1, CHECKPOINT_PATH)
-
-    logger.info("Training complete. Best validation F1: %.4f", best_f1)
-
-    # Write metrics JSON for DVC
     METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(METRICS_PATH, "w") as f:
-        json.dump(best_metrics, f, indent=2)
+        json.dump(metrics, f, indent=2)
     logger.info("Wrote metrics to %s", METRICS_PATH)
-
-
-@torch.no_grad()
-def evaluate(
-    model: GraphVulModel,
-    loader: DataLoader,
-    device: torch.device,
-) -> dict[str, float]:
-    model.eval()
-    all_preds = []
-    all_labels = []
-
-    for batch in loader:
-        batch = batch.to(device)
-        logits = model(
-            x=batch.x,
-            edge_index=batch.edge_index,
-            edge_type=batch.edge_type,
-            batch=batch.batch,
-            text_vec=batch.text_vec,
-        )
-        preds = (torch.sigmoid(logits) >= 0.5).long().cpu().tolist()
-        labels = batch.y.squeeze(-1).long().cpu().tolist()
-        all_preds.extend(preds)
-        all_labels.extend(labels)
-
-    return {
-        "accuracy": accuracy_score(all_labels, all_preds),
-        "precision": precision_score(all_labels, all_preds, zero_division=0),
-        "recall": recall_score(all_labels, all_preds, zero_division=0),
-        "f1": f1_score(all_labels, all_preds, zero_division=0),
-    }
 
 
 if __name__ == "__main__":

@@ -7,12 +7,12 @@ The repository SHALL be initialized with DVC (`dvc init`) and the resulting `.dv
 - **WHEN** a developer clones the repository
 - **THEN** the `.dvc/` configuration directory SHALL be present and DVC commands SHALL work without re-initialization
 
-### Requirement: Five-stage DVC pipeline
-The `dvc.yaml` file SHALL define five stages: `extract_subset`, `joern_export`, `embed_code`, `embed_cve`, and `train`. Each stage SHALL declare its command, dependencies, and outputs.
+### Requirement: Six-stage DVC pipeline
+The `dvc.yaml` file SHALL define six stages: `extract_subset`, `joern_export`, `embed_code`, `embed_cve`, `split_data`, and `train`. Each stage SHALL declare its command, dependencies, and outputs.
 
 #### Scenario: Full pipeline execution
 - **WHEN** `dvc repro` is run from the project root
-- **THEN** all five stages SHALL execute in dependency order, skipping any stage whose dependencies have not changed since the last run
+- **THEN** all six stages SHALL execute in dependency order, skipping any stage whose dependencies have not changed since the last run
 
 #### Scenario: Partial re-execution
 - **WHEN** only the training script is modified
@@ -23,11 +23,12 @@ The stages SHALL encode the following dependency relationships:
 - `joern_export` depends on `extract_subset`
 - `embed_code` depends on `joern_export`
 - `embed_cve` depends on `extract_subset`
-- `train` depends on `embed_code` and `embed_cve`
+- `split_data` depends on `extract_subset`
+- `train` depends on `embed_code`, `embed_cve`, and `split_data`
 
 #### Scenario: Parallel-eligible stages
 - **WHEN** `extract_subset` completes
-- **THEN** `joern_export` and `embed_cve` SHALL be eligible to run, as they have no mutual dependency
+- **THEN** `joern_export`, `embed_cve`, and `split_data` SHALL be eligible to run, as they have no mutual dependency
 
 ### Requirement: DVC-tracked outputs
 Each stage SHALL declare its output artifacts so DVC can track them. The `.gitignore` SHALL be updated to exclude DVC-tracked data directories (`data/`) while keeping `.dvc` and `dvc.yaml` / `dvc.lock` under version control.
