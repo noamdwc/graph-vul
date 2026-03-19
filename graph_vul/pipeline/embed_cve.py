@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 import torch
+from tqdm.auto import tqdm
 
 from graph_vul.config import DEBERTA_EMBEDDING_DIM, PROCESSED_DIR, SUBSET_CSV
 from graph_vul.pipeline.embed_utils import embed_texts, load_deberta
@@ -28,13 +29,22 @@ def embed_cve_texts(
     metadata = pd.read_csv(src)
     tokenizer, model = load_deberta()
 
+    total = len(metadata)
     processed, skipped = 0, 0
-    for _, row in metadata.iterrows():
+    progress = tqdm(
+        metadata.iterrows(),
+        total=total,
+        desc="Embedding CVEs",
+        unit="sample",
+    )
+
+    for _, row in progress:
         sample_id = str(row["sample_id"])
         out_path = dst / f"{sample_id}.pt"
 
         if out_path.exists():
             skipped += 1
+            progress.set_postfix(processed=processed, skipped=skipped)
             continue
 
         cve_desc = row.get("cve_desc", "")
@@ -45,6 +55,7 @@ def embed_cve_texts(
 
         torch.save(text_vec, out_path)
         processed += 1
+        progress.set_postfix(processed=processed, skipped=skipped)
 
     logger.info(
         "CVE embedding complete: %d processed, %d skipped (existing)", processed, skipped

@@ -1,5 +1,7 @@
 """Shared DeBERTa embedding utilities."""
 
+from importlib.util import find_spec
+
 import torch
 from transformers import AutoModel, AutoTokenizer
 
@@ -10,6 +12,12 @@ def load_deberta(
     model_name: str = DEBERTA_MODEL_NAME,
 ) -> tuple[AutoTokenizer, AutoModel]:
     """Load the DeBERTa tokenizer and model in eval mode."""
+    if find_spec("sentencepiece") is None:
+        raise RuntimeError(
+            "DeBERTa tokenizer dependency missing: install `sentencepiece` "
+            "and retry. This project's requirements include it."
+        )
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name)
     model.eval()

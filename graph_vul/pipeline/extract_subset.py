@@ -1,11 +1,36 @@
 """Extract a balanced CWE-119 subset from the Big-Vul dataset."""
 
 import logging
+import zipfile
+from pathlib import Path
+
 import pandas as pd
 
 from graph_vul.config import BIGVUL_CSV, SUBSET_CSV, CWE_ID, TARGET_SAMPLES
 
 logger = logging.getLogger(__name__)
+
+
+def _read_bigvul_csv(path: str) -> pd.DataFrame:
+    src = Path(path)
+
+    if zipfile.is_zipfile(src):
+        logger.info("Detected ZIP-compressed Big-Vul dataset at %s", src)
+        df = pd.read_csv(src, compression="zip")
+    else:
+        try:
+            df = pd.read_csv(src)
+        except UnicodeDecodeError:
+            logger.warning("UTF-8 decode failed for %s; retrying with latin-1", src)
+            df = pd.read_csv(src, encoding="latin-1")
+
+    return df.rename(
+        columns={
+            "CWE ID": "cwe_id",
+            "CVE ID": "cve_id",
+            "Summary": "cve_desc",
+        }
+    )
 
 
 def extract_subset(
@@ -17,7 +42,7 @@ def extract_subset(
     dst = output_csv or str(SUBSET_CSV)
 
     logger.info("Reading Big-Vul CSV from %s", src)
-    df = pd.read_csv(src)
+    df = _read_bigvul_csv(src)
 
     # Filter to CWE-119
     vul = df[(df["cwe_id"] == CWE_ID) & (df["vul"] == 1)]

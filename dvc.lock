@@ -1,0 +1,116 @@
+schema: '2.0'
+stages:
+  data_ingestion:
+    cmd: python scripts/download_bigvul.py
+    deps:
+    - path: scripts/download_bigvul.py
+      hash: md5
+      md5: 4526a5ceace199dc2df22905bff9a898
+      size: 1728
+    outs:
+    - path: data/bigvul.csv
+      hash: md5
+      md5: 95436ff6b6eb8b95c44f42dee5fe7541
+      size: 1541009577
+  extract_subset:
+    cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv --output
+      data/subset_cwe119.csv
+    deps:
+    - path: data/bigvul.csv
+      hash: md5
+      md5: 95436ff6b6eb8b95c44f42dee5fe7541
+      size: 1541009577
+    - path: graph_vul/pipeline/extract_subset.py
+      hash: md5
+      md5: 36bf7c8277187791d53b78966d26a738
+      size: 2768
+    outs:
+    - path: data/subset_cwe119.csv
+      hash: md5
+      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
+      size: 2269750
+  joern_export:
+    cmd: python -m graph_vul.pipeline.joern_export --input data/subset_cwe119.csv
+      --output data/raw
+    deps:
+    - path: data/subset_cwe119.csv
+      hash: md5
+      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
+      size: 2269750
+    - path: graph_vul/pipeline/joern_export.py
+      hash: md5
+      md5: f8b50f0ed27493a94e94f360599337d2
+      size: 7028
+    outs:
+    - path: data/raw
+      hash: md5
+      md5: 63e67460bede75b5aba5829565942845.dir
+      size: 71551713
+      nfiles: 12840
+  embed_code:
+    cmd: python -m graph_vul.pipeline.embed_code --input data/raw --output data/processed/code_embeddings
+      --subset-csv data/subset_cwe119.csv
+    deps:
+    - path: data/raw
+      hash: md5
+      md5: 63e67460bede75b5aba5829565942845.dir
+      size: 71551713
+      nfiles: 12840
+    - path: data/subset_cwe119.csv
+      hash: md5
+      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
+      size: 2269750
+    - path: graph_vul/pipeline/embed_code.py
+      hash: md5
+      md5: 4634c5a3c43677f79d72a36d2ae75a93
+      size: 8984
+    - path: graph_vul/pipeline/embed_utils.py
+      hash: md5
+      md5: f9c11c91e5ca4f32be6ad015b2443b3a
+      size: 1512
+    outs:
+    - path: data/processed/code_embeddings
+      hash: md5
+      md5: 146cb681fe0989f6d27ddcf3fa45ed26.dir
+      size: 676314026
+      nfiles: 1000
+  embed_cve:
+    cmd: python -m graph_vul.pipeline.embed_cve --input data/subset_cwe119.csv --output
+      data/processed/cve_embeddings
+    deps:
+    - path: data/subset_cwe119.csv
+      hash: md5
+      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
+      size: 2269750
+    - path: graph_vul/pipeline/embed_cve.py
+      hash: md5
+      md5: c8af8338383e9db89e924c44033d3f41
+      size: 2256
+    - path: graph_vul/pipeline/embed_utils.py
+      hash: md5
+      md5: f9c11c91e5ca4f32be6ad015b2443b3a
+      size: 1512
+    outs:
+    - path: data/processed/cve_embeddings
+      hash: md5
+      md5: 01f22df41de166d627462f2de4741dc2.dir
+      size: 3065414
+      nfiles: 1000
+  split_data:
+    cmd: python -m graph_vul.pipeline.split_data --input data/subset_cwe119.csv --output
+      data/splits --seed 42
+    deps:
+    - path: data/subset_cwe119.csv
+      hash: md5
+      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
+      size: 2269750
+    - path: graph_vul/pipeline/split_data.py
+      hash: md5
+      md5: 73eb90d7a99bd40a1c058829bf6e0e90
+      size: 1891
+    outs:
+    - path: data/splits
+      hash: md5
+      md5: ac0c9c440c8169efe5400c55daf79d70.dir
+      size: 4890
+      nfiles: 3

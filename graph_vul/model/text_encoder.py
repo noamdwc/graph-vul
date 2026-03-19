@@ -16,6 +16,12 @@ class TextProjection(nn.Module):
         self.proj = nn.Linear(in_dim, out_dim)
         self.activation = nn.LeakyReLU()
         self.output_dim = out_dim
+        self.input_dim = in_dim
 
     def forward(self, text_vec: torch.Tensor) -> torch.Tensor:
+        if text_vec.dim() == 1:
+            text_vec = text_vec.reshape(-1, self.input_dim)
+        elif text_vec.dim() > 2:
+            text_vec = text_vec.reshape(text_vec.size(0), -1)
+        text_vec = text_vec.to(dtype=self.proj.weight.dtype)
         return self.activation(self.proj(text_vec))

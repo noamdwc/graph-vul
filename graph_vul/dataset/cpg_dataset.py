@@ -71,6 +71,10 @@ class CPGDataset(Dataset):
         else:
             text_vec = torch.zeros(DEBERTA_EMBEDDING_DIM)
 
+        # Store graph-level text features as a single row so PyG batches them
+        # into [batch_size, hidden_dim] instead of flattening 1D vectors.
+        text_vec = text_vec.reshape(1, -1)
+
         return Data(
             x=x,
             edge_index=edge_index,
