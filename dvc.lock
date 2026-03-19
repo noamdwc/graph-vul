@@ -27,8 +27,8 @@ stages:
     outs:
     - path: data/subset_cwe119.csv
       hash: md5
-      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
-      size: 2269750
+      md5: 7eac46334c97f6268e5979c95a56b3cf
+      size: 6656899
   joern_export:
     cmd: python -m graph_vul.pipeline.joern_export --input 
       data/subset_cwe119.csv --output data/raw

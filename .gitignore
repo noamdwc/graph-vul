@@ -14,3 +14,7 @@ wandb/
 # IDE
 .vscode/
 .idea/
+
+# Local environments and tool installs
+.venv/
+joern_install/

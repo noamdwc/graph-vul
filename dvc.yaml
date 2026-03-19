@@ -50,7 +50,7 @@ stages:
       - data/splits
 
   train:
-    cmd: python -m graph_vul.train --epochs 30 --batch-size 32 --lr 1e-3 --seed 42
+    cmd: python -m graph_vul.train --epochs 35 --batch-size 32 --lr 1e-4 --seed 42
     deps:
       - data/processed/code_embeddings
       - data/processed/cve_embeddings

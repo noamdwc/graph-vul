@@ -1,7 +1,8 @@
-"""Node-level classifier with early CVE fusion and top-level GraphVul model."""
+"""Graph-level classifier with early CVE fusion and top-level GraphVul model."""
 
 import torch
 import torch.nn as nn
+from torch_geometric.utils import scatter
 
 from graph_vul.config import (
     GAT_HEADS,
@@ -81,6 +82,7 @@ class GraphVulModel(nn.Module):
                 x = torch.cat([x, text_broadcast], dim=-1)
                 x = self.fusion_proj(x) # project back to layer_dim
 
-        # Per-node classification
-        logits = self.node_classifier(x)
-        return logits
+        # Per-node logits, then max-pool to graph level
+        node_logits = self.node_classifier(x)
+        graph_logits = scatter(node_logits, batch, dim=0, reduce="max")
+        return graph_logits

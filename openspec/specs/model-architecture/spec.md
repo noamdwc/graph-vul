@@ -19,11 +19,11 @@ The model SHALL accept pre-computed DeBERTa text vectors (from the dataset's `te
 - **THEN** the text branch SHALL output a tensor of shape `[batch_size, projected_text_dim]`
 
 ### Requirement: Multi-modal fusion via MLP
-The model SHALL concatenate the code vector and the projected text vector, then pass the fused representation through an MLP classification head with dropout and LeakyReLU activations. The final output SHALL be a sigmoid-activated scalar per sample.
+The model SHALL produce per-node logits via the NodeClassifier MLP head, then aggregate to a single graph-level logit via max-pooling over the batch vector. The final output of `GraphVulModel.forward()` SHALL be a tensor of shape `[batch_size]` containing one raw logit per graph. The early fusion mechanism (CVE embedding injected between GAT layers) SHALL remain unchanged.
 
 #### Scenario: Binary classification output
-- **WHEN** the fused vector is passed through the MLP head
-- **THEN** the model SHALL output a tensor of shape `[batch_size, 1]` with values in `[0, 1]` representing vulnerability probability
+- **WHEN** the node features are passed through the MLP head and aggregated
+- **THEN** the model SHALL output a tensor of shape `[batch_size]` with one logit per graph, computed as the max of per-node logits within each graph
 
 ### Requirement: Model composability
 The GAT encoder, text projection, and fusion MLP SHALL be separate `nn.Module` subclasses composed within a top-level model class. This allows independent testing and future replacement of individual branches.

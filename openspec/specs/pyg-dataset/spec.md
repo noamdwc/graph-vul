@@ -34,8 +34,12 @@ The dataset SHALL embed the CVE description text for each sample using DeBERTa a
 - **THEN** the `text_vec` SHALL be a zero vector of the same dimensionality
 
 ### Requirement: Provide standard PyG Dataset interface
-The dataset class SHALL extend `torch_geometric.data.Dataset` and implement `len()`, `get(idx)`, and `processed_file_names` so it integrates with PyG DataLoaders.
+The dataset class SHALL extend `torch_geometric.data.Dataset` and implement `len()`, `get(idx)`, and `processed_file_names` so it integrates with PyG DataLoaders. Each `Data` object SHALL carry a graph-level label `y` as a scalar float (not per-node broadcasted), representing the vulnerability status of the entire function.
 
 #### Scenario: DataLoader integration
 - **WHEN** the dataset is passed to a PyG `DataLoader` with a batch size
-- **THEN** it SHALL produce batched `Data` objects with correctly collated graphs, node features, text vectors, and labels
+- **THEN** it SHALL produce batched `Data` objects with correctly collated graphs, node features, text vectors, and graph-level labels where `batch.y` has shape `[batch_size]`
+
+#### Scenario: Graph-level label assignment
+- **WHEN** the dataset loads a sample with vulnerability label `vul`
+- **THEN** the `Data` object's `y` attribute SHALL be a scalar `float(vul)` instead of `torch.full((num_nodes,), float(vul))`

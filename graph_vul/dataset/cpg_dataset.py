@@ -75,11 +75,10 @@ class CPGDataset(Dataset):
         # into [batch_size, hidden_dim] instead of flattening 1D vectors.
         text_vec = text_vec.reshape(1, -1)
 
-        num_nodes = x.size(0)
         return Data(
             x=x,
             edge_index=edge_index,
             edge_type=edge_type,
             text_vec=text_vec,
-            y=torch.full((num_nodes,), float(row["vul"])),
+            y=torch.tensor(float(row["vul"])),
         )

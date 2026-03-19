@@ -6,18 +6,18 @@ The training script SHALL load pre-computed split indices from `data/splits/trai
 - **THEN** it SHALL read `data/splits/train.json` and `data/splits/val.json`, and use those indices to construct the training and validation DataLoaders
 
 ### Requirement: Training loop with BCE loss
-The training loop SHALL be managed by the Lightning Trainer rather than a manual for-loop. The `GraphVulLitModule.training_step` SHALL compute BCEWithLogitsLoss. Per-epoch train loss and validation metrics SHALL be logged via Lightning's `self.log()` mechanism, which routes to the configured loggers (including WandbLogger).
+The `GraphVulLitModule.training_step` SHALL compute BCEWithLogitsLoss on graph-level logits `[batch_size]` against graph-level labels `[batch_size]`. Per-epoch train loss and validation metrics SHALL be logged via Lightning's `self.log()` mechanism, which routes to the configured loggers (including WandbLogger).
 
 #### Scenario: Single epoch execution
 - **WHEN** one training epoch completes
-- **THEN** the Trainer SHALL have invoked `training_step` for each batch and the mean training loss SHALL be logged
+- **THEN** the loss SHALL be computed on graph-level predictions against graph-level labels
 
 ### Requirement: Validation evaluation
-After each training epoch, the Trainer SHALL run a validation loop calling `validation_step` on each batch without gradient computation. Validation metrics (accuracy, precision, recall, F1) SHALL be computed using `torchmetrics` and logged via `self.log()`.
+After each training epoch, the Trainer SHALL run a validation loop calling `validation_step` on each batch without gradient computation. Validation metrics (accuracy, precision, recall, F1) SHALL be computed directly on graph-level model output without post-hoc scatter aggregation from node predictions.
 
 #### Scenario: Validation metrics reported
 - **WHEN** a validation pass completes
-- **THEN** accuracy, precision, recall, and F1 SHALL be logged to all configured Lightning loggers
+- **THEN** metrics SHALL be computed directly on the model's graph-level output and logged to all configured Lightning loggers
 
 ### Requirement: Model checkpoint saving
 The Lightning `ModelCheckpoint` callback SHALL save a full Lightning checkpoint (model state, optimizer state, epoch) whenever `val_f1` improves. The checkpoint path SHALL be `data/best_model.ckpt`.
