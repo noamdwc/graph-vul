@@ -7,17 +7,20 @@ node features (x), edge_index, and edge_type to an output directory.
 import argparse
 import json
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
 import torch
+from tqdm.auto import tqdm
 
 from graph_vul.config import DEBERTA_EMBEDDING_DIM, PROCESSED_DIR, RAW_DIR, SUBSET_CSV
 from graph_vul.pipeline.embed_utils import embed_texts, load_deberta
 
 logger = logging.getLogger(__name__)
 
-EDGE_TYPE_MAP = {"AST": 0, "CFG": 1, "PDG": 2}
+EDGE_TYPE_MAP = {"AST": 0, "CFG": 1, "PDG": 2, "DDG": 2, "CDG": 2}
+_EDGE_LABEL_RE = re.compile(r'label\s*=\s*"(\w+):')
 
 
 def embed_code_nodes(
@@ -33,18 +36,28 @@ def embed_code_nodes(
     metadata = pd.read_csv(csv_path)
     tokenizer, model = load_deberta()
 
+    total = len(metadata)
     processed, skipped = 0, 0
-    for _, row in metadata.iterrows():
+    progress = tqdm(
+        metadata.iterrows(),
+        total=total,
+        desc="Embedding code",
+        unit="sample",
+    )
+
+    for _, row in progress:
         sample_id = str(row["sample_id"])
         out_path = dst / f"{sample_id}.pt"
 
         if out_path.exists():
             skipped += 1
+            progress.set_postfix(processed=processed, skipped=skipped)
             continue
 
         sample_dir = src / sample_id
         if not sample_dir.exists() or not any(sample_dir.iterdir()):
             logger.warning("Sample %s has no CPG export, skipping", sample_id)
+            progress.set_postfix(processed=processed, skipped=skipped)
             continue
 
         edge_index, edge_type, node_texts = _parse_cpg(sample_dir)
@@ -67,6 +80,7 @@ def embed_code_nodes(
             )
 
         processed += 1
+        progress.set_postfix(processed=processed, skipped=skipped)
 
     logger.info(
         "Code embedding complete: %d processed, %d skipped (existing)", processed, skipped
@@ -189,13 +203,6 @@ def _parse_dot_cpg(
 
     for dot_file in dot_files:
         content = dot_file.read_text(errors="replace")
-        fname = dot_file.stem.lower()
-        if "cfg" in fname:
-            etype = "CFG"
-        elif "pdg" in fname or "ddg" in fname or "cdg" in fname:
-            etype = "PDG"
-        else:
-            etype = "AST"
 
         for line in content.splitlines():
             line = line.strip()
@@ -203,18 +210,30 @@ def _parse_dot_cpg(
                 parts = line.split("->")
                 if len(parts) == 2:
                     src = parts[0].strip().strip('"')
-                    dst = parts[1].split("[")[0].strip().strip(";").strip('"')
+                    rest = parts[1]
+                    dst = rest.split("[")[0].strip().strip(";").strip('"')
+                    # Extract edge type from label attribute, e.g. [ label = "CFG: "]
+                    m = _EDGE_LABEL_RE.search(rest)
+                    etype = m.group(1).upper() if m else "AST"
                     edges.append((src, dst, etype))
             elif line and not line.startswith(("digraph", "}", "//")):
                 node_id = line.split("[")[0].strip().strip('"')
                 label = ""
-                if "label=" in line:
-                    start = line.index("label=") + 6
-                    if line[start] == '"':
-                        end = line.index('"', start + 1)
-                        label = line[start + 1 : end]
-                    else:
-                        label = line[start:].split("]")[0].split(",")[0]
+                if "label" in line:
+                    # Joern HTML labels: <TYPE, LINE<BR/>code text>
+                    if "<BR/>" in line:
+                        after_br = line.split("<BR/>", 1)[1]
+                        label = after_br.split(">")[0].strip()
+                    elif 'label="' in line:
+                        start = line.index('label="') + 7
+                        end = line.index('"', start)
+                        label = line[start:end]
+                    elif "label=<" in line or "label = <" in line:
+                        start = line.index("<") + 1
+                        end = line.rindex(">")
+                        label = line[start:end]
+                # Unescape HTML entities
+                label = label.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
                 if node_id:
                     nodes[node_id] = label
 
