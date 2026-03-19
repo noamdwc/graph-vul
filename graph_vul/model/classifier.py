@@ -8,6 +8,7 @@ from graph_vul.config import (
     GAT_HIDDEN_DIM,
     MLP_DROPOUT,
     NODE_CLASSIFIER_HIDDEN_DIM,
+    FUSION_LAYER,
 )
 from graph_vul.model.gat_encoder import GATEncoder
 from graph_vul.model.text_encoder import TextProjection
@@ -56,12 +57,13 @@ class GraphVulModel(nn.Module):
         self.gat_encoder = GATEncoder()
         self.text_projection = TextProjection()
         self.fusion_proj = FusionProjection(
-            node_dim=self.gat_encoder.layer1_dim,
+            node_dim=self.gat_encoder.layer_dim,
             text_dim=self.text_projection.output_dim,
         )
         self.node_classifier = NodeClassifier(
             in_dim=self.gat_encoder.output_dim,
         )
+        self.fusion_layer: int = FUSION_LAYER
 
     def forward(
         self,
@@ -71,21 +73,13 @@ class GraphVulModel(nn.Module):
         batch: torch.Tensor,
         text_vec: torch.Tensor,
     ) -> torch.Tensor:
-        # GAT layer 1: node embeddings (N x layer1_dim)
-        x = self.gat_encoder.forward_layer1(x, edge_index, edge_type)
-
-        # Project CVE text: (batch_size x 128)
-        text_proj = self.text_projection(text_vec)
-
-        # Broadcast text to each node using batch index: (N x 128)
-        text_broadcast = text_proj[batch]
-
-        # Fuse: concat + project back to layer1_dim
-        x = torch.cat([x, text_broadcast], dim=-1)
-        x = self.fusion_proj(x)
-
-        # GAT layer 2: node embeddings (N x output_dim)
-        x = self.gat_encoder.forward_layer2(x, edge_index, edge_type)
+        for i, layer in enumerate(self.gat_encoder.layers) : # i is the index of the layer
+            x = layer(x, edge_index, edge_type)
+            if i == self.fusion_layer - 1:
+                text_proj = self.text_projection(text_vec)
+                text_broadcast = text_proj[batch]
+                x = torch.cat([x, text_broadcast], dim=-1)
+                x = self.fusion_proj(x) # project back to layer_dim
 
         # Per-node classification
         logits = self.node_classifier(x)

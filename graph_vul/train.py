@@ -6,7 +6,7 @@ import logging
 
 import torch
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
 from torch_geometric.loader import DataLoader
 
@@ -77,9 +77,11 @@ def train(
     trainer = pl.Trainer(
         max_epochs=num_epochs,
         accelerator="auto",
-        callbacks=[checkpoint_cb],
+        callbacks=[checkpoint_cb, LearningRateMonitor(logging_interval="epoch")],
         logger=wandb_logger,
         deterministic=True,
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm",
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)

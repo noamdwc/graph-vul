@@ -5,12 +5,17 @@ import torch
 import torchmetrics
 from torch_geometric.utils import scatter
 
-from graph_vul.config import LEARNING_RATE
+from graph_vul.config import LEARNING_RATE, WEIGHT_DECAY, LR_SCHEDULER_FACTOR, WARMUP_EPOCHS, MIN_LR
 from graph_vul.model.classifier import GraphVulModel
 
 
 class GraphVulLitModule(pl.LightningModule):
-    def __init__(self, lr: float = LEARNING_RATE):
+    def __init__(self,
+                lr: float = LEARNING_RATE,
+                weight_decay: float = WEIGHT_DECAY,
+                lr_scheduler_factor: float = LR_SCHEDULER_FACTOR,
+                warmup_epochs: int = WARMUP_EPOCHS,
+                min_lr: float = MIN_LR):
         super().__init__()
         self.save_hyperparameters()
         self.model = GraphVulModel()
@@ -21,6 +26,7 @@ class GraphVulLitModule(pl.LightningModule):
         self.val_precision = torchmetrics.classification.BinaryPrecision()
         self.val_recall = torchmetrics.classification.BinaryRecall()
         self.val_f1 = torchmetrics.classification.BinaryF1Score()
+
 
     def forward(self, **kwargs: torch.Tensor) -> torch.Tensor:
         return self.model(**kwargs)
@@ -71,4 +77,12 @@ class GraphVulLitModule(pl.LightningModule):
         self.val_f1.reset()
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        def get_lr_lambda(epoch):
+            if epoch < self.hparams.warmup_epochs:
+                return 1.0
+            if optimizer.param_groups[0]['lr'] < self.hparams.min_lr:
+                return 1.0
+            return self.hparams.lr_scheduler_factor ** (epoch - self.hparams.warmup_epochs)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr_lambda)
+        return [optimizer], [scheduler]
