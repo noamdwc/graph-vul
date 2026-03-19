@@ -114,3 +114,43 @@ stages:
       md5: ac0c9c440c8169efe5400c55daf79d70.dir
       size: 4890
       nfiles: 3
+  train:
+    cmd: python -m graph_vul.train --epochs 15 --batch-size 32 --lr 1e-3 --seed 42
+    deps:
+    - path: data/processed/code_embeddings
+      hash: md5
+      md5: 146cb681fe0989f6d27ddcf3fa45ed26.dir
+      size: 676314026
+      nfiles: 1000
+    - path: data/processed/cve_embeddings
+      hash: md5
+      md5: 01f22df41de166d627462f2de4741dc2.dir
+      size: 3065414
+      nfiles: 1000
+    - path: data/splits
+      hash: md5
+      md5: ac0c9c440c8169efe5400c55daf79d70.dir
+      size: 4890
+      nfiles: 3
+    - path: graph_vul/dataset/cpg_dataset.py
+      hash: md5
+      md5: 6a2da1debdf11ae5da1e0a1dd18f535a
+      size: 2856
+    - path: graph_vul/model/
+      hash: md5
+      md5: 2a76a167cc2949a95a8076aea884b467.dir
+      size: 14668
+      nfiles: 10
+    - path: graph_vul/train.py
+      hash: md5
+      md5: b5f8efabc9e2e153787c2d60b2923f42
+      size: 3312
+    outs:
+    - path: data/best_model.ckpt
+      hash: md5
+      md5: e9b7a159713f9dd722ba4578ab8d4453
+      size: 24084708
+    - path: data/metrics.json
+      hash: md5
+      md5: c85e8da255569d3f072ae0658f87abb1
+      size: 131
