@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GATv2Conv, global_mean_pool
+from torch_geometric.nn import GATv2Conv
 
 from graph_vul.config import (
     DEBERTA_EMBEDDING_DIM,
@@ -25,38 +25,39 @@ class GATEncoder(nn.Module):
         super().__init__()
         self.edge_embedding = nn.Embedding(num_edge_types, hidden_dim * heads)
 
-        self.convs = nn.ModuleList()
-        # First layer: in_dim -> hidden_dim (per head)
-        self.convs.append(
-            GATv2Conv(in_dim, hidden_dim, heads=heads, edge_dim=hidden_dim * heads, concat=True)
+        # First layer: in_dim -> hidden_dim (per head), concat=True → output dim = hidden_dim * heads
+        self.conv1 = GATv2Conv(
+            in_dim, hidden_dim, heads=heads, edge_dim=hidden_dim * heads, concat=True
         )
-        # Subsequent layers: hidden_dim * heads -> hidden_dim (per head)
-        for _ in range(num_layers - 1):
-            self.convs.append(
-                GATv2Conv(
-                    hidden_dim * heads,
-                    hidden_dim,
-                    heads=heads,
-                    edge_dim=hidden_dim * heads,
-                    concat=False,
-                )
-            )
+        # Second layer: hidden_dim * heads -> hidden_dim, concat=False → output dim = hidden_dim
+        self.conv2 = GATv2Conv(
+            hidden_dim * heads,
+            hidden_dim,
+            heads=heads,
+            edge_dim=hidden_dim * heads,
+            concat=False,
+        )
 
         self.activation = nn.LeakyReLU()
+        self.layer1_dim = hidden_dim * heads
         self.output_dim = hidden_dim
 
-    def forward(
+    def forward_layer1(
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_type: torch.Tensor,
-        batch: torch.Tensor,
     ) -> torch.Tensor:
         edge_attr = self.edge_embedding(edge_type)
+        x = self.conv1(x, edge_index, edge_attr=edge_attr)
+        return self.activation(x)
 
-        for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index, edge_attr=edge_attr)
-            x = self.activation(x)
-
-        # Global mean pooling: one vector per graph
-        return global_mean_pool(x, batch)
+    def forward_layer2(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_type: torch.Tensor,
+    ) -> torch.Tensor:
+        edge_attr = self.edge_embedding(edge_type)
+        x = self.conv2(x, edge_index, edge_attr=edge_attr)
+        return self.activation(x)

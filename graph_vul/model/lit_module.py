@@ -1,8 +1,9 @@
-"""PyTorch Lightning wrapper for GraphVulModel."""
+"""PyTorch Lightning wrapper for GraphVulModel with node-level prediction."""
 
 import pytorch_lightning as pl
 import torch
 import torchmetrics
+from torch_geometric.utils import scatter
 
 from graph_vul.config import LEARNING_RATE
 from graph_vul.model.classifier import GraphVulModel
@@ -15,6 +16,7 @@ class GraphVulLitModule(pl.LightningModule):
         self.model = GraphVulModel()
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
+        # Graph-level metrics (aggregated from node predictions)
         self.val_accuracy = torchmetrics.classification.BinaryAccuracy()
         self.val_precision = torchmetrics.classification.BinaryPrecision()
         self.val_recall = torchmetrics.classification.BinaryRecall()
@@ -24,6 +26,7 @@ class GraphVulLitModule(pl.LightningModule):
         return self.model(**kwargs)
 
     def training_step(self, batch: object, batch_idx: int) -> torch.Tensor:
+        # Per-node logits (N,)
         logits = self.model(
             x=batch.x,
             edge_index=batch.edge_index,
@@ -31,8 +34,9 @@ class GraphVulLitModule(pl.LightningModule):
             batch=batch.batch,
             text_vec=batch.text_vec,
         )
-        loss = self.criterion(logits, batch.y.squeeze(-1))
-        self.log("train_loss", loss, prog_bar=True, batch_size=batch.y.size(0))
+        # Per-node loss: batch.y is (N,) with per-node labels
+        loss = self.criterion(logits, batch.y)
+        self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         return loss
 
     def validation_step(self, batch: object, batch_idx: int) -> None:
@@ -43,13 +47,17 @@ class GraphVulLitModule(pl.LightningModule):
             batch=batch.batch,
             text_vec=batch.text_vec,
         )
-        labels = batch.y.squeeze(-1).long()
-        preds = (torch.sigmoid(logits) >= 0.5).long()
 
-        self.val_accuracy.update(preds, labels)
-        self.val_precision.update(preds, labels)
-        self.val_recall.update(preds, labels)
-        self.val_f1.update(preds, labels)
+        # Aggregate to graph-level for metrics
+        graph_logits = scatter(logits, batch.batch, dim=0, reduce="max")
+        graph_preds = (torch.sigmoid(graph_logits) >= 0.5).long()
+        # Graph labels: take first node's label per graph (all nodes share same label)
+        graph_labels = scatter(batch.y, batch.batch, dim=0, reduce="max").long()
+
+        self.val_accuracy.update(graph_preds, graph_labels)
+        self.val_precision.update(graph_preds, graph_labels)
+        self.val_recall.update(graph_preds, graph_labels)
+        self.val_f1.update(graph_preds, graph_labels)
 
     def on_validation_epoch_end(self) -> None:
         self.log("val_accuracy", self.val_accuracy.compute(), prog_bar=True)
