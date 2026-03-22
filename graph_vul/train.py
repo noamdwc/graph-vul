@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 
+import pandas as pd
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
@@ -39,10 +40,9 @@ def train(
     # Data
     dataset = CPGDataset()
 
-    with open(SPLITS_DIR / "train.json") as f:
-        train_idx = json.load(f)
-    with open(SPLITS_DIR / "val.json") as f:
-        val_idx = json.load(f)
+    assignments = pd.read_csv(SPLITS_DIR / "assignments.csv")
+    train_idx = assignments[assignments["split"] == "train"]["sample_id"].tolist()
+    val_idx = assignments[assignments["split"] == "val"]["sample_id"].tolist()
 
     train_loader = DataLoader(dataset[torch.tensor(train_idx)], batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(dataset[torch.tensor(val_idx)], batch_size=batch_size, shuffle=False)

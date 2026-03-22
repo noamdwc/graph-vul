@@ -8,12 +8,23 @@ RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 CPG_CACHE_DIR = DATA_DIR / "cpg_cache"
 BIGVUL_CSV = DATA_DIR / "bigvul.csv"
-SUBSET_CSV = DATA_DIR / "subset_cwe119.csv"
+SUBSET_CSV = DATA_DIR / "subset.csv"
+SUBSET_MANIFEST = DATA_DIR / "subset_manifest.json"
+SUBSET_REPORT = DATA_DIR / "subset_report.md"
 CHECKPOINT_PATH = DATA_DIR / "best_model.ckpt"
 
 # Data pipeline
 CWE_ID = "CWE-119"
-TARGET_SAMPLES = 1500  # per class (vulnerable / benign)
+
+# Subset sampling
+TARGET_VULNERABLE_SAMPLES = 1000
+TARGET_BENIGN_SAMPLES = 2000  # 2:1 benign oversampling for training
+MIN_CVES = 7
+MAX_CVES = 12
+MAX_ROWS_PER_PROJECT = 500
+MAX_ROWS_PER_CVE = 500
+MAX_ROWS_PER_GROUP = 300  # per project+CVE combination
+DEDUPLICATE_CODE = True
 
 # DeBERTa
 DEBERTA_MODEL_NAME = "microsoft/deberta-v3-base"
@@ -40,6 +51,9 @@ NUM_EPOCHS = 50
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.15
 SPLITS_DIR = DATA_DIR / "splits"
+SPLIT_ASSIGNMENTS = SPLITS_DIR / "assignments.csv"
+SPLIT_REPORT = SPLITS_DIR / "split_report.md"
+HELD_OUT_PROJECT_COUNT = 3
 # Joern export
 JOERN_WORKERS = min(os.cpu_count() or 1, 4)
 
