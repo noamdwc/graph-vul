@@ -45,7 +45,7 @@ MLP_DROPOUT = 0.3
 NODE_CLASSIFIER_HIDDEN_DIM = 128
 
 # Training
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 LEARNING_RATE = 1e-4
 NUM_EPOCHS = 50
 VAL_SPLIT = 0.15
@@ -61,4 +61,34 @@ SEED = 42
 WEIGHT_DECAY = 0.01
 LR_SCHEDULER_FACTOR = 0.95
 WARMUP_EPOCHS = 5
-MIN_LR = 1e-7
+MIN_LR = 1e-8
+
+# UniXcoder
+UNIXCODER_MODEL_NAME = "microsoft/unixcoder-base"
+UNIXCODER_EMBEDDING_DIM = 768
+FUNC_MAX_WHITESPACE_TOKENS = 512  # filter functions >= 513
+
+# Function baseline paths
+FUNC_SUBSET_CSV = DATA_DIR / "func_subset.csv"
+FUNC_SUBSET_MANIFEST = DATA_DIR / "func_subset_manifest.json"
+FUNC_SUBSET_REPORT = DATA_DIR / "func_subset_report.md"
+FUNC_EMBEDDINGS_DIR = PROCESSED_DIR / "func_embeddings"
+FUNC_SPLITS_DIR = DATA_DIR / "func_splits"
+FUNC_CHECKPOINT_PATH = DATA_DIR / "func_baseline_model.ckpt"
+
+# Function baseline sampling
+FUNC_MIN_PROJECT_ROWS = 50
+FUNC_MAX_PROJECT_ROWS = 2000
+FUNC_MIN_VUL_PER_PROJECT = 3
+FUNC_MAX_ROWS_PER_PROJECT = 150
+FUNC_MIN_CVES = 15
+FUNC_MAX_CVES = 30
+
+# Function baseline MLP
+FUNC_MLP_HIDDEN_DIM = 128
+FUNC_MLP_DROPOUT = 0.3
+
+# Function baseline training
+FUNC_BATCH_SIZE = 64
+FUNC_LEARNING_RATE = 1e-3
+FUNC_NUM_EPOCHS = 50

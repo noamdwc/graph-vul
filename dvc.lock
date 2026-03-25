@@ -14,106 +14,119 @@ stages:
       size: 1541009577
   extract_subset:
     cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv 
-      --output data/subset_cwe119.csv
+      --output data/subset.csv --manifest data/subset_manifest.json --report 
+      data/subset_report.md
     deps:
     - path: data/bigvul.csv
       hash: md5
       md5: 95436ff6b6eb8b95c44f42dee5fe7541
       size: 1541009577
+    - path: graph_vul/config.py
+      hash: md5
+      md5: cb397f38f36f668575ce591bd5b4d52e
+      size: 2338
     - path: graph_vul/pipeline/extract_subset.py
       hash: md5
-      md5: 36bf7c8277187791d53b78966d26a738
-      size: 2768
+      md5: bb6cc8fec111a6ba7a39b161ee8436a6
+      size: 21990
     outs:
-    - path: data/subset_cwe119.csv
+    - path: data/subset.csv
       hash: md5
-      md5: 7eac46334c97f6268e5979c95a56b3cf
-      size: 6656899
+      md5: 1cf3507bff81a7759331a337b90c7110
+      size: 4306251
+    - path: data/subset_manifest.json
+      hash: md5
+      md5: 8f777cf4d0757f56c9846c7b5a8f89a7
+      size: 2767
+    - path: data/subset_report.md
+      hash: md5
+      md5: 4e7c2fd03ebee25d8ff613fd95431c50
+      size: 1944
   joern_export:
-    cmd: python -m graph_vul.pipeline.joern_export --input 
-      data/subset_cwe119.csv --output data/raw
+    cmd: python -m graph_vul.pipeline.joern_export --input data/subset.csv 
+      --output data/raw
     deps:
-    - path: data/subset_cwe119.csv
+    - path: data/subset.csv
       hash: md5
-      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
-      size: 2269750
+      md5: 1cf3507bff81a7759331a337b90c7110
+      size: 4306251
     - path: graph_vul/pipeline/joern_export.py
       hash: md5
-      md5: f8b50f0ed27493a94e94f360599337d2
-      size: 7028
+      md5: 8c79972ac22ab30ff49b4e472b196705
+      size: 9220
     outs:
     - path: data/raw
       hash: md5
-      md5: 63e67460bede75b5aba5829565942845.dir
-      size: 71551713
-      nfiles: 12840
+      md5: cbe3f8b788e30cbc7800aa90bbaf2b04.dir
+      size: 160244208
+      nfiles: 30337
   embed_code:
     cmd: python -m graph_vul.pipeline.embed_code --input data/raw --output 
-      data/processed/code_embeddings --subset-csv data/subset_cwe119.csv
+      data/processed/code_embeddings --subset-csv data/subset.csv
     deps:
     - path: data/raw
       hash: md5
-      md5: 63e67460bede75b5aba5829565942845.dir
-      size: 71551713
-      nfiles: 12840
-    - path: data/subset_cwe119.csv
+      md5: cbe3f8b788e30cbc7800aa90bbaf2b04.dir
+      size: 160244208
+      nfiles: 30337
+    - path: data/subset.csv
       hash: md5
-      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
-      size: 2269750
+      md5: 1cf3507bff81a7759331a337b90c7110
+      size: 4306251
     - path: graph_vul/pipeline/embed_code.py
       hash: md5
       md5: d6df26ad359a1f40989fbe2ebe60e133
       size: 9937
     - path: graph_vul/pipeline/embed_utils.py
       hash: md5
-      md5: 922eab894391a17cc60b59b40f0b1e15
-      size: 2585
+      md5: 4ec0b684d82cda7b1e84bcba9f0f3a9e
+      size: 3872
     outs:
     - path: data/processed/code_embeddings
       hash: md5
-      md5: edbbd2e0f7561e3e7c040aa65c5eef25.dir
-      size: 676314026
-      nfiles: 1000
+      md5: 7143c81c4961c0f40df5358fad638faf.dir
+      size: 1490793128
+      nfiles: 2237
   embed_cve:
-    cmd: python -m graph_vul.pipeline.embed_cve --input data/subset_cwe119.csv 
-      --output data/processed/cve_embeddings
+    cmd: python -m graph_vul.pipeline.embed_cve --input data/subset.csv --output
+      data/processed/cve_embeddings
     deps:
-    - path: data/subset_cwe119.csv
+    - path: data/subset.csv
       hash: md5
-      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
-      size: 2269750
+      md5: 1cf3507bff81a7759331a337b90c7110
+      size: 4306251
     - path: graph_vul/pipeline/embed_cve.py
       hash: md5
       md5: c8af8338383e9db89e924c44033d3f41
       size: 2256
     - path: graph_vul/pipeline/embed_utils.py
       hash: md5
-      md5: 922eab894391a17cc60b59b40f0b1e15
-      size: 2585
+      md5: 4ec0b684d82cda7b1e84bcba9f0f3a9e
+      size: 3872
     outs:
     - path: data/processed/cve_embeddings
       hash: md5
-      md5: d939c6192fa723208984c6014d2ff020.dir
-      size: 3065414
-      nfiles: 1000
+      md5: d34f961b686b48cbdc910201d8b03322.dir
+      size: 6758826
+      nfiles: 2237
   split_data:
-    cmd: python -m graph_vul.pipeline.split_data --input data/subset_cwe119.csv 
+    cmd: python -m graph_vul.pipeline.split_data --input data/subset.csv 
       --output data/splits --seed 42
     deps:
-    - path: data/subset_cwe119.csv
+    - path: data/subset.csv
       hash: md5
-      md5: c4fdd3e5ac058c7e9cafa821ca7bc867
-      size: 2269750
+      md5: 1cf3507bff81a7759331a337b90c7110
+      size: 4306251
     - path: graph_vul/pipeline/split_data.py
       hash: md5
-      md5: 73eb90d7a99bd40a1c058829bf6e0e90
-      size: 1891
+      md5: 2d5c227fd01d7fc334eabbed415fce24
+      size: 10370
     outs:
     - path: data/splits
       hash: md5
-      md5: ac0c9c440c8169efe5400c55daf79d70.dir
-      size: 4890
-      nfiles: 3
+      md5: 788f78922b50b8ed376f894b0051844f.dir
+      size: 24294
+      nfiles: 2
   train:
     cmd: python -m graph_vul.train --epochs 15 --batch-size 32 --lr 1e-3 --seed 
       42
@@ -155,3 +168,109 @@ stages:
       hash: md5
       md5: 3a99972ab65585dd5827e4b510c72a40
       size: 130
+  func_extract_subset:
+    cmd: python -m graph_vul.pipeline.func_extract_subset
+    deps:
+    - path: data/bigvul.csv
+      hash: md5
+      md5: 95436ff6b6eb8b95c44f42dee5fe7541
+      size: 1541009577
+    - path: graph_vul/config.py
+      hash: md5
+      md5: cb397f38f36f668575ce591bd5b4d52e
+      size: 2338
+    - path: graph_vul/pipeline/func_extract_subset.py
+      hash: md5
+      md5: 2d1ed3bcc05d162e9a04d79713821e45
+      size: 21328
+    outs:
+    - path: data/func_subset.csv
+      hash: md5
+      md5: cac75216d348c95f018b0c1c8441166f
+      size: 1539947
+    - path: data/func_subset_manifest.json
+      hash: md5
+      md5: 9cd9053ea9ab436e3d02a82bfccb3082
+      size: 4933
+    - path: data/func_subset_report.md
+      hash: md5
+      md5: e3d271eaf86532ad0ec03374585b239e
+      size: 2471
+  func_embed:
+    cmd: python -m graph_vul.pipeline.embed_functions
+    deps:
+    - path: data/func_subset.csv
+      hash: md5
+      md5: cac75216d348c95f018b0c1c8441166f
+      size: 1539947
+    - path: graph_vul/pipeline/embed_functions.py
+      hash: md5
+      md5: e493ff8cd47df67f5a0d540c25589a83
+      size: 2300
+    - path: graph_vul/pipeline/embed_utils.py
+      hash: md5
+      md5: 4ec0b684d82cda7b1e84bcba9f0f3a9e
+      size: 3872
+    outs:
+    - path: data/processed/func_embeddings
+      hash: md5
+      md5: f150cbb799f9c2144410da5e6f173c9f.dir
+      size: 6324586
+      nfiles: 1389
+  func_split:
+    cmd: python -m graph_vul.pipeline.split_data --input data/func_subset.csv 
+      --output data/func_splits
+    deps:
+    - path: data/func_subset.csv
+      hash: md5
+      md5: cac75216d348c95f018b0c1c8441166f
+      size: 1539947
+    - path: graph_vul/pipeline/split_data.py
+      hash: md5
+      md5: 2d5c227fd01d7fc334eabbed415fce24
+      size: 10370
+    outs:
+    - path: data/func_splits
+      hash: md5
+      md5: 65c2de335d7536218b26408d594bf927.dir
+      size: 16074
+      nfiles: 2
+  func_train:
+    cmd: python -m graph_vul.train_baseline --epochs 50 --batch-size 64 --lr 
+      1e-3
+    deps:
+    - path: data/func_splits
+      hash: md5
+      md5: 65c2de335d7536218b26408d594bf927.dir
+      size: 16074
+      nfiles: 2
+    - path: data/processed/func_embeddings
+      hash: md5
+      md5: f150cbb799f9c2144410da5e6f173c9f.dir
+      size: 6324586
+      nfiles: 1389
+    - path: graph_vul/dataset/func_dataset.py
+      hash: md5
+      md5: d048e1ae05c4d1394dcd8df6bb2834e2
+      size: 1689
+    - path: graph_vul/model/func_classifier.py
+      hash: md5
+      md5: a22d005f6e03f0cb9242e0a9ea2e0020
+      size: 812
+    - path: graph_vul/model/func_lit_module.py
+      hash: md5
+      md5: d9ad75a93e0bee43945f285e81d6a2bf
+      size: 5342
+    - path: graph_vul/train_baseline.py
+      hash: md5
+      md5: 5b8f9e8a5045d1a518575fa67835f1b6
+      size: 4585
+    outs:
+    - path: data/func_baseline_model.ckpt
+      hash: md5
+      md5: da4a849a1917794338193c3f0d7d953a
+      size: 1191533
+    - path: data/func_metrics.json
+      hash: md5
+      md5: e31f2167c536e1709848024599ae018c
+      size: 317

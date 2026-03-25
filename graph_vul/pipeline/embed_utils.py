@@ -6,7 +6,11 @@ import logging
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-from graph_vul.config import DEBERTA_EMBEDDING_DIM, DEBERTA_MODEL_NAME
+from graph_vul.config import (
+    DEBERTA_EMBEDDING_DIM,
+    DEBERTA_MODEL_NAME,
+    UNIXCODER_MODEL_NAME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,3 +81,40 @@ def embed_texts(
         embeddings.extend(batch_embeddings)
 
     return torch.stack(embeddings)
+
+
+def load_unixcoder(
+    model_name: str = UNIXCODER_MODEL_NAME,
+) -> tuple[AutoTokenizer, AutoModel]:
+    """Load the UniXcoder tokenizer and model in eval mode."""
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    device = resolve_torch_device()
+    model = AutoModel.from_pretrained(model_name).to(device)
+    model.eval()
+    logger.info("Loaded %s on %s", model_name, device)
+    return tokenizer, model
+
+
+@torch.no_grad()
+def embed_mean_pool(
+    text: str,
+    tokenizer: AutoTokenizer,
+    model: AutoModel,
+    max_length: int = 512,
+) -> torch.Tensor:
+    """Encode a single text with UniXcoder and return mean-pooled hidden states (768-dim)."""
+    device = next(model.parameters()).device
+    inputs = tokenizer(
+        text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=max_length,
+        padding=False,
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    outputs = model(**inputs)
+    hidden = outputs.last_hidden_state  # [1, seq_len, 768]
+    attention_mask = inputs["attention_mask"]  # [1, seq_len]
+    mask = attention_mask.unsqueeze(-1).float()  # [1, seq_len, 1]
+    pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1)  # [1, 768]
+    return pooled.squeeze(0).cpu()
