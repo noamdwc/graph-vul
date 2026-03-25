@@ -22,14 +22,14 @@ class CPGDataset(Dataset):
         root: str | None = None,
         subset_csv: str | None = None,
         code_embeddings_dir: str | None = None,
-        cve_embeddings_dir: str | None = None,
+        cwe_embeddings_dir: str | None = None,
         transform=None,
         pre_transform=None,
     ):
         self._subset_csv = subset_csv or str(SUBSET_CSV)
         processed = Path(root or str(PROCESSED_DIR))
         self._code_dir = Path(code_embeddings_dir) if code_embeddings_dir else processed / "code_embeddings"
-        self._cve_dir = Path(cve_embeddings_dir) if cve_embeddings_dir else processed / "cve_embeddings"
+        self._cwe_dir = Path(cwe_embeddings_dir) if cwe_embeddings_dir else processed / "cwe_embeddings"
 
         self._metadata = pd.read_csv(self._subset_csv)
 
@@ -64,10 +64,11 @@ class CPGDataset(Dataset):
         edge_index = code_data["edge_index"]
         edge_type = code_data["edge_type"]
 
-        # Load pre-computed CVE embedding
-        cve_path = self._cve_dir / f"{sample_id}.pt"
-        if cve_path.exists():
-            text_vec = torch.load(cve_path, weights_only=False)
+        # Load pre-computed CWE embedding
+        cwe_id = str(row["cwe_id"])
+        cwe_path = self._cwe_dir / f"{cwe_id}.pt"
+        if cwe_path.exists():
+            text_vec = torch.load(cwe_path, weights_only=False)
         else:
             text_vec = torch.zeros(DEBERTA_EMBEDDING_DIM)
 

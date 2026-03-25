@@ -81,5 +81,5 @@ def subset_df(bigvul_df):
     subset = subset.sample(frac=1, random_state=42).reset_index(drop=True)
     subset.insert(0, "sample_id", range(len(subset)))
 
-    keep = ["sample_id", "project", "func_before", "cve_id", "cve_desc", "vul"]
+    keep = ["sample_id", "project", "func_before", "cve_id", "cwe_id", "vul"]
     return subset[keep]

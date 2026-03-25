@@ -555,7 +555,7 @@ def extract_subset(
         )
 
     # Keep only needed columns + project
-    keep_cols = ["project", "func_before", "cve_id", "cve_desc", "vul"]
+    keep_cols = ["project", "func_before", "cve_id", "cwe_id", "vul"]
     keep_cols = [c for c in keep_cols if c in subset.columns]
     subset = subset[keep_cols].copy()
     subset.insert(0, "sample_id", range(len(subset)))

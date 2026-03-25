@@ -48,12 +48,12 @@ class FuncLitModule(pl.LightningModule):
         self.test_recall = torchmetrics.classification.BinaryRecall()
         self.test_f1 = torchmetrics.classification.BinaryF1Score()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
+    def forward(self, code_emb: torch.Tensor, cwe_emb: torch.Tensor) -> torch.Tensor:
+        return self.model(code_emb, cwe_emb)
 
-    def _shared_step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        embeddings, labels = batch
-        logits = self.model(embeddings).squeeze(-1)  # [N]
+    def _shared_step(self, batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        code_emb, cwe_emb, labels = batch
+        logits = self.model(code_emb, cwe_emb).squeeze(-1)  # [N]
         loss = self.criterion(logits, labels)
         preds = (logits >= 0).long()
         return loss, preds, labels.long()

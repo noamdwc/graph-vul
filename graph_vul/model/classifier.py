@@ -1,4 +1,4 @@
-"""Graph-level classifier with early CVE fusion and top-level GraphVul model."""
+"""Graph-level classifier with early CWE fusion and top-level GraphVul model."""
 
 import torch
 import torch.nn as nn
