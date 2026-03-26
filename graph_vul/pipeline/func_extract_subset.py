@@ -1,10 +1,10 @@
 """Extract a function-level CWE-119 subset with project-size and token-length filters.
 
-Forked from extract_subset.py with modifications:
+Keeps all CWE-119 rows after applying:
+- Deduplication (exact code matches)
 - Project filter: keep only projects with 50-2000 CWE-119 rows and >= 3 vulnerable
 - Token filter: drop functions with >= 513 whitespace tokens
-- CVE params: MIN_CVES=15, MAX_CVES=30
-- No top2 penalty in _score_cve (hard project filter makes it redundant)
+- Per-project cap: max 150 rows per project (preserving vul/benign ratio)
 - Output to data/func_subset.csv (separate from existing data/subset.csv)
 """
 
@@ -21,21 +21,15 @@ from graph_vul.config import (
     BIGVUL_CSV,
     CWE_ID,
     DEDUPLICATE_CODE,
-    FUNC_MAX_CVES,
     FUNC_MAX_PROJECT_ROWS,
     FUNC_MAX_ROWS_PER_PROJECT,
     FUNC_MAX_WHITESPACE_TOKENS,
-    FUNC_MIN_CVES,
     FUNC_MIN_PROJECT_ROWS,
     FUNC_MIN_VUL_PER_PROJECT,
     FUNC_SUBSET_CSV,
     FUNC_SUBSET_MANIFEST,
     FUNC_SUBSET_REPORT,
-    MAX_ROWS_PER_CVE,
-    MAX_ROWS_PER_GROUP,
     SEED,
-    TARGET_BENIGN_SAMPLES,
-    TARGET_VULNERABLE_SAMPLES,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,190 +140,6 @@ def _filter_token_length(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------------
-# CVE scoring and selection (no top2 penalty)
-# ---------------------------------------------------------------------------
-
-def _score_cve(cve_stats: dict, selected_projects: set) -> float:
-    """Score a candidate CVE for selection (no top2 penalty)."""
-    vul = cve_stats["vul_count"]
-    benign = cve_stats["benign_count"]
-    project = cve_stats["project"]
-
-    if vul < 3:
-        return -1
-
-    base = np.sqrt(min(vul, 200) * min(benign, 200))
-    diversity = 2.0 if project not in selected_projects else 0.5
-    size_factor = min(vul + benign, 300) / 300.0
-    spread = cve_stats.get("length_cv", 0.5)
-    spread_factor = 0.5 + min(spread, 1.0) * 0.5
-
-    return base * diversity * size_factor * spread_factor
-
-
-def _select_cves(
-    df: pd.DataFrame,
-    min_cves: int,
-    max_cves: int,
-    seed: int,
-) -> list[str]:
-    """Greedily select CVEs for diversity."""
-    rng = np.random.RandomState(seed)
-
-    cve_groups = df.groupby("cve_id")
-    cve_stats = {}
-    for cve_id, group in cve_groups:
-        projects = group["project"].unique()
-        cve_stats[cve_id] = {
-            "project": projects[0],
-            "vul_count": int((group["vul"] == 1).sum()),
-            "benign_count": int((group["vul"] == 0).sum()),
-            "total": len(group),
-            "length_cv": group["code_char_len"].std() / max(group["code_char_len"].mean(), 1),
-        }
-
-    eligible = {k: v for k, v in cve_stats.items() if v["vul_count"] >= 3}
-    if len(eligible) < min_cves:
-        logger.warning(
-            "Only %d eligible CVEs (need %d); relaxing vul threshold to 1",
-            len(eligible), min_cves,
-        )
-        eligible = {k: v for k, v in cve_stats.items() if v["vul_count"] >= 1}
-
-    selected = []
-    selected_projects = set()
-    remaining = dict(eligible)
-
-    while len(selected) < max_cves and remaining:
-        scored = [
-            (cve_id, _score_cve(stats, selected_projects))
-            for cve_id, stats in remaining.items()
-        ]
-        scored.sort(key=lambda x: x[1], reverse=True)
-
-        if not scored or scored[0][1] < 0:
-            break
-
-        top_score = scored[0][1]
-        candidates = [s for s in scored if s[1] >= top_score * 0.7]
-        pick = candidates[rng.randint(len(candidates))]
-
-        cve_id = pick[0]
-        selected.append(cve_id)
-        selected_projects.add(eligible[cve_id]["project"])
-        del remaining[cve_id]
-
-    logger.info(
-        "Selected %d CVEs from %d projects",
-        len(selected),
-        len({eligible[c]["project"] for c in selected}),
-    )
-    return selected
-
-
-# ---------------------------------------------------------------------------
-# Budget allocation and row sampling
-# ---------------------------------------------------------------------------
-
-def _allocate_budget(
-    df: pd.DataFrame,
-    selected_cves: list[str],
-    target_vul: int,
-    target_benign: int,
-    max_per_cve: int,
-    max_per_group: int,
-) -> dict[str, dict[str, int]]:
-    """Allocate vul/benign budgets per CVE, respecting caps."""
-    cve_data = {}
-    for cve_id in selected_cves:
-        group = df[df["cve_id"] == cve_id]
-        cve_data[cve_id] = {
-            "project": group["project"].iloc[0],
-            "avail_vul": int((group["vul"] == 1).sum()),
-            "avail_benign": int((group["vul"] == 0).sum()),
-        }
-
-    total_avail_vul = sum(c["avail_vul"] for c in cve_data.values())
-    total_avail_benign = sum(c["avail_benign"] for c in cve_data.values())
-
-    allocation = {}
-    for cve_id, stats in cve_data.items():
-        if total_avail_vul > 0:
-            vul_share = int(target_vul * stats["avail_vul"] / total_avail_vul)
-        else:
-            vul_share = 0
-        if total_avail_benign > 0:
-            benign_share = int(target_benign * stats["avail_benign"] / total_avail_benign)
-        else:
-            benign_share = 0
-
-        total_cap = min(max_per_cve, max_per_group)
-        vul_alloc = min(vul_share, stats["avail_vul"], total_cap)
-        benign_alloc = min(benign_share, stats["avail_benign"], total_cap - vul_alloc)
-
-        allocation[cve_id] = {"vul": vul_alloc, "benign": benign_alloc}
-
-    return allocation
-
-
-def _sample_rows(
-    df: pd.DataFrame,
-    selected_cves: list[str],
-    allocation: dict[str, dict[str, int]],
-    seed: int,
-) -> pd.DataFrame:
-    """Sample rows from each CVE group with metadata-aware stratification."""
-    rng = np.random.RandomState(seed)
-    sampled_parts = []
-
-    for cve_id in selected_cves:
-        group = df[df["cve_id"] == cve_id]
-        alloc = allocation[cve_id]
-
-        for label, target_n in [(1, alloc["vul"]), (0, alloc["benign"])]:
-            pool = group[group["vul"] == label]
-            if len(pool) == 0 or target_n == 0:
-                continue
-
-            n = min(target_n, len(pool))
-
-            bucket_col = "code_char_len_bucket"
-            if bucket_col in pool.columns and pool[bucket_col].nunique() > 1:
-                per_bucket = dict(list(pool.groupby(bucket_col, observed=True)))
-                parts = []
-                remaining = n
-                bucket_names = list(per_bucket.keys())
-                rng.shuffle(bucket_names)
-
-                for i, bucket_name in enumerate(bucket_names):
-                    bucket_df = per_bucket[bucket_name]
-                    if i < len(bucket_names) - 1:
-                        bucket_n = max(1, int(n * len(bucket_df) / len(pool)))
-                        bucket_n = min(bucket_n, remaining, len(bucket_df))
-                    else:
-                        bucket_n = min(remaining, len(bucket_df))
-
-                    if bucket_n > 0:
-                        parts.append(bucket_df.sample(n=bucket_n, random_state=rng.randint(2**31)))
-                        remaining -= bucket_n
-
-                    if remaining <= 0:
-                        break
-
-                if parts:
-                    sampled_parts.append(pd.concat(parts))
-            else:
-                sampled_parts.append(pool.sample(n=n, random_state=rng.randint(2**31)))
-
-    if not sampled_parts:
-        return pd.DataFrame()
-
-    result = pd.concat(sampled_parts, ignore_index=True)
-    result = result.sample(frac=1, random_state=seed).reset_index(drop=True)
-    return result
-
-
 def _cap_projects(
     df: pd.DataFrame,
     max_per_project: int,
@@ -409,15 +219,13 @@ def _generate_report(manifest: dict) -> str:
     cfg = m["config"]
 
     lines = [
-        "# Function Subset Sampling Report",
+        "# Function Subset Report",
         "",
         "## Configuration",
         "",
-        f"- Target vulnerable: {cfg.get('target_vulnerable_samples', 'N/A')}",
-        f"- Target benign: {cfg.get('target_benign_samples', 'N/A')}",
-        f"- CVE range: {cfg.get('min_cves', 'N/A')}-{cfg.get('max_cves', 'N/A')}",
         f"- Project row range: {cfg.get('min_project_rows', 'N/A')}-{cfg.get('max_project_rows', 'N/A')}",
         f"- Min vulnerable per project: {cfg.get('min_vul_per_project', 'N/A')}",
+        f"- Max rows per project: {cfg.get('max_rows_per_project', 'N/A')}",
         f"- Max whitespace tokens: {cfg.get('max_whitespace_tokens', 'N/A')}",
         f"- Deduplicate code: {cfg.get('deduplicate_code', 'N/A')}",
         f"- Seed: {cfg.get('seed', 'N/A')}",
@@ -472,12 +280,6 @@ def extract_func_subset(
     output_csv: str | None = None,
     output_manifest: str | None = None,
     output_report: str | None = None,
-    target_vul: int = TARGET_VULNERABLE_SAMPLES,
-    target_benign: int = TARGET_BENIGN_SAMPLES,
-    min_cves: int = FUNC_MIN_CVES,
-    max_cves: int = FUNC_MAX_CVES,
-    max_per_cve: int = MAX_ROWS_PER_CVE,
-    max_per_group: int = MAX_ROWS_PER_GROUP,
     deduplicate: bool = DEDUPLICATE_CODE,
     seed: int = SEED,
 ) -> pd.DataFrame:
@@ -512,39 +314,14 @@ def extract_func_subset(
     all_cwe = _filter_token_length(all_cwe)
 
     # Cap per-project row count to normalize project sizes
-    all_cwe = _cap_projects(all_cwe, FUNC_MAX_ROWS_PER_PROJECT, seed)
-
-    # Select CVEs
-    selected_cves = _select_cves(all_cwe, min_cves, max_cves, seed)
-
-    # Filter to selected CVEs
-    pool = all_cwe[all_cwe["cve_id"].isin(selected_cves)]
-
-    # Allocate budget (no per-project cap — hard filter already applied)
-    allocation = _allocate_budget(
-        pool, selected_cves, target_vul, target_benign,
-        max_per_cve, max_per_group,
-    )
-
-    # Sample rows
-    subset = _sample_rows(pool, selected_cves, allocation, seed)
+    subset = _cap_projects(all_cwe, FUNC_MAX_ROWS_PER_PROJECT, seed)
 
     if len(subset) == 0:
-        logger.error("No rows sampled — check configuration and input data")
+        logger.error("No rows remaining after filtering — check configuration and input data")
         return pd.DataFrame()
 
     achieved_vul = int((subset["vul"] == 1).sum())
     achieved_benign = int((subset["vul"] == 0).sum())
-    if achieved_vul < target_vul:
-        logger.warning(
-            "Achieved %d vulnerable samples (target: %d)",
-            achieved_vul, target_vul,
-        )
-    if achieved_benign < target_benign:
-        logger.warning(
-            "Achieved %d benign samples (target: %d)",
-            achieved_benign, target_benign,
-        )
 
     # Keep only needed columns
     keep_cols = ["project", "func_before", "cve_id", "cwe_id", "vul"]
@@ -559,14 +336,12 @@ def extract_func_subset(
         len(subset), achieved_vul, achieved_benign, dst,
     )
 
+    selected_cves = sorted(subset["cve_id"].unique().tolist())
     config_dict = {
-        "target_vulnerable_samples": target_vul,
-        "target_benign_samples": target_benign,
-        "min_cves": min_cves,
-        "max_cves": max_cves,
         "min_project_rows": FUNC_MIN_PROJECT_ROWS,
         "max_project_rows": FUNC_MAX_PROJECT_ROWS,
         "min_vul_per_project": FUNC_MIN_VUL_PER_PROJECT,
+        "max_rows_per_project": FUNC_MAX_ROWS_PER_PROJECT,
         "max_whitespace_tokens": FUNC_MAX_WHITESPACE_TOKENS,
         "deduplicate_code": deduplicate,
         "seed": seed,
