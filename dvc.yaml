@@ -99,28 +99,9 @@ stages:
     - graph_vul/pipeline/split_data.py
     outs:
     - data/func_splits
-
-  func_train:
-    cmd: python -m graph_vul.train_baseline --epochs 50 --batch-size 64 --lr 
-      1e-3
-    deps:
-    - data/func_splits
-    - data/processed/cwe_embeddings
-    - data/processed/func_embeddings
-    - graph_vul/dataset/func_dataset.py
-    - graph_vul/model/func_classifier.py
-    - graph_vul/model/func_lit_module.py
-    - graph_vul/train_baseline.py
-    outs:
-    - data/func_baseline_model.ckpt
-    metrics:
-    - data/func_metrics.json:
-        cache: false
-
-    frozen: true
+    
   func_finetune:
-    cmd: python -m graph_vul.train_finetune --epochs 10 --batch-size 8 
-      --encoder-lr 2e-5 --head-lr 1e-3 --grad-accum 8
+    cmd: python -m graph_vul.train_finetune
     deps:
     - data/func_subset.csv
     - data/processed/cwe_embeddings

@@ -42,7 +42,8 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.val_recall = torchmetrics.classification.BinaryRecall()
         self.val_f1 = torchmetrics.classification.BinaryF1Score()
 
-        # Test metrics
+        # Test metrics (one set per test dataloader)
+        self._test_prefixes: list[str] = ["test"]
         self.test_accuracy = torchmetrics.classification.BinaryAccuracy()
         self.test_precision = torchmetrics.classification.BinaryPrecision()
         self.test_recall = torchmetrics.classification.BinaryRecall()
@@ -97,6 +98,10 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.val_recall.reset()
         self.val_f1.reset()
 
+    def set_test_prefix(self, prefix: str) -> None:
+        """Set the metric prefix for the current test run (e.g. 'test', 'unseen_val')."""
+        self._current_test_prefix = prefix
+
     def test_step(self, batch: dict, batch_idx: int) -> None:
         _, preds, labels = self._shared_step(batch)
         self.test_accuracy.update(preds, labels)
@@ -105,10 +110,11 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.test_f1.update(preds, labels)
 
     def on_test_epoch_end(self) -> None:
-        self.log("test_accuracy", self.test_accuracy.compute())
-        self.log("test_precision", self.test_precision.compute())
-        self.log("test_recall", self.test_recall.compute())
-        self.log("test_f1", self.test_f1.compute())
+        prefix = getattr(self, "_current_test_prefix", "test")
+        self.log(f"{prefix}_accuracy", self.test_accuracy.compute())
+        self.log(f"{prefix}_precision", self.test_precision.compute())
+        self.log(f"{prefix}_recall", self.test_recall.compute())
+        self.log(f"{prefix}_f1", self.test_f1.compute())
         self.test_accuracy.reset()
         self.test_precision.reset()
         self.test_recall.reset()

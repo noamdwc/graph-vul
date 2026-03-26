@@ -4,12 +4,16 @@ Returns raw tokenized code (not pre-computed embeddings) so the encoder
 can be trained end-to-end, along with pre-computed CWE embeddings and labels.
 """
 
+import logging
+import time
 from pathlib import Path
 
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
+
+logger = logging.getLogger(__name__)
 
 from graph_vul.config import (
     DEBERTA_EMBEDDING_DIM,
@@ -48,12 +52,27 @@ class FuncFinetuneDataset(Dataset):
         split_ids = set(assignments[assignments["split"] == split]["sample_id"].values)
         subset = subset[subset["sample_id"].isin(split_ids)].reset_index(drop=True)
 
-        self.codes = subset["func_before"].fillna("").values
         self.cwe_ids = subset["cwe_id"].values
         self.labels = subset["vul"].values.astype(float)
 
         # Cache CWE embeddings
         self._cwe_cache: dict[str, torch.Tensor] = {}
+
+        # Pre-tokenize all samples once to avoid repeated work each epoch
+        codes = subset["func_before"].fillna("").tolist()
+        logger.info("[%s] Pre-tokenizing %d samples (max_length=%d)...", split, len(codes), self.max_length)
+        t0 = time.perf_counter()
+        tokenized = self.tokenizer(
+            codes,
+            truncation=True,
+            max_length=self.max_length,
+            padding="max_length",
+            return_tensors="pt",
+        )
+        self.input_ids = tokenized["input_ids"]
+        self.attention_masks = tokenized["attention_mask"]
+        elapsed = time.perf_counter() - t0
+        logger.info("[%s] Pre-tokenization complete in %.1fs — cached %d input_ids", split, elapsed, len(self.input_ids))
 
     def _get_cwe_embedding(self, cwe_id: str) -> torch.Tensor:
         if cwe_id not in self._cwe_cache:
@@ -65,19 +84,12 @@ class FuncFinetuneDataset(Dataset):
         return self._cwe_cache[cwe_id]
 
     def __len__(self) -> int:
-        return len(self.codes)
+        return len(self.labels)
 
     def __getitem__(self, idx: int) -> dict:
-        tokens = self.tokenizer(
-            self.codes[idx],
-            truncation=True,
-            max_length=self.max_length,
-            padding="max_length",
-            return_tensors="pt",
-        )
         return {
-            "input_ids": tokens["input_ids"].squeeze(0),
-            "attention_mask": tokens["attention_mask"].squeeze(0),
+            "input_ids": self.input_ids[idx],
+            "attention_mask": self.attention_masks[idx],
             "cwe_embedding": self._get_cwe_embedding(str(self.cwe_ids[idx])),
             "label": torch.tensor(self.labels[idx], dtype=torch.float32),
         }

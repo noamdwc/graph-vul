@@ -66,6 +66,27 @@ def _assign_splits(
 
 
 # ---------------------------------------------------------------------------
+# Unseen CWE split assignment
+# ---------------------------------------------------------------------------
+
+def _assign_unseen_splits(
+    df_heldout: pd.DataFrame,
+    seed: int,
+) -> pd.DataFrame:
+    """Split held-out CWE samples into unseen_val and unseen_test (50/50, project-disjoint)."""
+    labels = df_heldout["vul"].values
+    groups = df_heldout["project"].values
+
+    sgkf = StratifiedGroupKFold(n_splits=2, shuffle=True, random_state=seed)
+    unseen_val_idx, unseen_test_idx = next(sgkf.split(df_heldout, labels, groups))
+
+    assignments = pd.Series("unseen_val", index=df_heldout.index, name="split")
+    assignments.iloc[unseen_test_idx] = "unseen_test"
+
+    return pd.DataFrame({"sample_id": df_heldout["sample_id"], "split": assignments})
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -120,6 +141,45 @@ def _validate_splits(df: pd.DataFrame, assignments: pd.DataFrame) -> list[str]:
     return warnings
 
 
+def _validate_unseen_splits(df_heldout: pd.DataFrame, assignments: pd.DataFrame) -> list[str]:
+    """Validate unseen split properties."""
+    warnings = []
+    if len(df_heldout) == 0:
+        return warnings
+
+    merged = df_heldout.merge(assignments, on="sample_id")
+
+    # Check project disjointness between unseen_val and unseen_test
+    unseen_val_projects = set(
+        merged.loc[merged["split"] == "unseen_val", "project"].unique()
+    )
+    unseen_test_projects = set(
+        merged.loc[merged["split"] == "unseen_test", "project"].unique()
+    )
+    overlap = unseen_val_projects & unseen_test_projects
+    if overlap:
+        warnings.append(f"PROJECT OVERLAP between unseen_val and unseen_test: {overlap}")
+
+    # Check no held-out CWE samples leaked into train/val/test
+    heldout_ids = set(df_heldout["sample_id"].values)
+    for split_name in ["train", "val", "test"]:
+        leaked = heldout_ids & set(
+            assignments.loc[assignments["split"] == split_name, "sample_id"].values
+        )
+        if leaked:
+            warnings.append(
+                f"LEAKAGE: {len(leaked)} held-out CWE samples found in '{split_name}' split"
+            )
+
+    # Check unseen splits are non-empty
+    for split_name in ["unseen_val", "unseen_test"]:
+        n = (merged["split"] == split_name).sum()
+        if n == 0:
+            warnings.append(f"Split '{split_name}' is empty")
+
+    return warnings
+
+
 # ---------------------------------------------------------------------------
 # Report generation
 # ---------------------------------------------------------------------------
@@ -141,8 +201,10 @@ def _generate_split_report(
         "|-------|-------|------------|--------|-----------|",
     ]
 
-    for split_name in ["train", "val", "test"]:
+    for split_name in ["train", "val", "test", "unseen_val", "unseen_test"]:
         split_df = merged[merged["split"] == split_name]
+        if len(split_df) == 0:
+            continue
         total = len(split_df)
         vul = int((split_df["vul"] == 1).sum())
         benign = total - vul
@@ -157,7 +219,7 @@ def _generate_split_report(
         lines.extend(["", "## Per-CWE Breakdown", ""])
         lines.append("| Split | CWE | Total | Vulnerable | Benign |")
         lines.append("|-------|-----|-------|------------|--------|")
-        for split_name in ["train", "val", "test"]:
+        for split_name in ["train", "val", "test", "unseen_val", "unseen_test"]:
             split_df = merged[merged["split"] == split_name]
             for cwe_id in sorted(split_df["cwe_id"].unique()):
                 cwe_rows = split_df[split_df["cwe_id"] == cwe_id]
@@ -169,8 +231,11 @@ def _generate_split_report(
     lines.extend(["", "## CVE Coverage", ""])
     lines.append("| Split | Unique CVEs | CVE List |")
     lines.append("|-------|-------------|----------|")
-    for split_name in ["train", "val", "test"]:
+    all_splits = ["train", "val", "test", "unseen_val", "unseen_test"]
+    for split_name in all_splits:
         split_df = merged[merged["split"] == split_name]
+        if len(split_df) == 0:
+            continue
         cves = sorted(split_df["cve_id"].unique())
         lines.append(f"| {split_name} | {len(cves)} | {', '.join(cves)} |")
 
@@ -178,25 +243,31 @@ def _generate_split_report(
     lines.extend(["", "## Project Coverage", ""])
     lines.append("| Split | Unique Projects | Project List |")
     lines.append("|-------|-----------------|--------------|")
-    for split_name in ["train", "val", "test"]:
+    for split_name in all_splits:
         split_df = merged[merged["split"] == split_name]
+        if len(split_df) == 0:
+            continue
         projects = sorted(split_df["project"].unique())
         lines.append(f"| {split_name} | {len(projects)} | {', '.join(projects)} |")
 
     # Overlap verification
     lines.extend(["", "## Overlap Verification", ""])
     split_projects = {}
-    for split_name in ["train", "val", "test"]:
+    for split_name in all_splits:
         split_df = merged[merged["split"] == split_name]
         split_projects[split_name] = set(split_df["project"].unique())
 
-    for s1, s2 in [("train", "val"), ("train", "test"), ("val", "test")]:
-        overlap = split_projects.get(s1, set()) & split_projects.get(s2, set())
+    pairs = [("train", "val"), ("train", "test"), ("val", "test"),
+             ("unseen_val", "unseen_test")]
+    for s1, s2 in pairs:
+        if s1 not in split_projects or s2 not in split_projects:
+            continue
+        overlap = split_projects[s1] & split_projects[s2]
         status = "NONE" if not overlap else f"**LEAKAGE**: {overlap}"
         lines.append(f"- Project overlap ({s1} ∩ {s2}): {status}")
 
     # Val/test project details
-    for split_name in ["val", "test"]:
+    for split_name in ["val", "test", "unseen_val", "unseen_test"]:
         split_df = merged[merged["split"] == split_name]
         lines.extend(["", f"## {split_name.title()} Projects", ""])
         for proj in sorted(split_df["project"].unique()):
@@ -214,7 +285,7 @@ def _generate_split_report(
         ct = pd.crosstab(merged["split"], merged[col])
         lines.append("| Split | " + " | ".join(str(c) for c in ct.columns) + " |")
         lines.append("|-------" + "".join("| --- " for _ in ct.columns) + "|")
-        for split_name in ["train", "val", "test"]:
+        for split_name in ["train", "val", "test", "unseen_val", "unseen_test"]:
             if split_name in ct.index:
                 row_vals = " | ".join(str(ct.loc[split_name, c]) for c in ct.columns)
                 lines.append(f"| {split_name} | {row_vals} |")
@@ -255,22 +326,29 @@ def split_data(
         except ValueError:
             df[col + "_bucket"] = "medium"
 
-    # Exclude held-out CWE rows — they are reserved for separate evaluation
+    # Separate held-out CWE rows for unseen evaluation
     has_cwe = "cwe_id" in df.columns
+    df_heldout = pd.DataFrame()
     if has_cwe and HELDOUT_CWE_IDS:
         heldout_mask = df["cwe_id"].isin(HELDOUT_CWE_IDS)
-        n_heldout = heldout_mask.sum()
+        df_heldout = df[heldout_mask].copy()
         df = df[~heldout_mask].copy()
         logger.info(
-            "Excluded held-out CWEs (%s): %d rows removed, %d remaining",
-            ", ".join(HELDOUT_CWE_IDS), n_heldout, len(df),
+            "Separated held-out CWEs (%s): %d rows for unseen splits, %d remaining for train/val/test",
+            ", ".join(HELDOUT_CWE_IDS), len(df_heldout), len(df),
         )
 
     # Assign splits on training CWEs (stratified by label, grouped by project)
     assignments = _assign_splits(df, seed)
 
+    # Split held-out CWE rows into unseen_val / unseen_test
+    if len(df_heldout) > 0:
+        unseen_assignments = _assign_unseen_splits(df_heldout, seed)
+        assignments = pd.concat([assignments, unseen_assignments], ignore_index=True)
+
     # Validate
     warnings = _validate_splits(df, assignments)
+    warnings.extend(_validate_unseen_splits(df_heldout, assignments))
     for w in warnings:
         logger.warning(w)
 
@@ -282,16 +360,19 @@ def split_data(
     assignments.to_csv(assignments_path, index=False)
     logger.info("Wrote split assignments to %s", assignments_path)
 
-    report = _generate_split_report(df, assignments, warnings)
+    # Combine main + held-out for reporting
+    df_all = pd.concat([df, df_heldout], ignore_index=True) if len(df_heldout) > 0 else df
+    report = _generate_split_report(df_all, assignments, warnings)
     report_path = out / "split_report.md"
     with open(report_path, "w") as f:
         f.write(report)
     logger.info("Wrote split report to %s", report_path)
 
     # Log summary
-    for split_name in ["train", "val", "test"]:
+    for split_name in ["train", "val", "test", "unseen_val", "unseen_test"]:
         n = (assignments["split"] == split_name).sum()
-        logger.info("Split '%s': %d rows", split_name, n)
+        if n > 0:
+            logger.info("Split '%s': %d rows", split_name, n)
 
 
 if __name__ == "__main__":
