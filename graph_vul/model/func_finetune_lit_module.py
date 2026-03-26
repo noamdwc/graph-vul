@@ -42,6 +42,12 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.val_recall = torchmetrics.classification.BinaryRecall()
         self.val_f1 = torchmetrics.classification.BinaryF1Score()
 
+        # Unseen val metrics (logged every epoch alongside val)
+        self.unseen_val_accuracy = torchmetrics.classification.BinaryAccuracy()
+        self.unseen_val_precision = torchmetrics.classification.BinaryPrecision()
+        self.unseen_val_recall = torchmetrics.classification.BinaryRecall()
+        self.unseen_val_f1 = torchmetrics.classification.BinaryF1Score()
+
         # Test metrics (one set per test dataloader)
         self._test_prefixes: list[str] = ["test"]
         self.test_accuracy = torchmetrics.classification.BinaryAccuracy()
@@ -81,12 +87,18 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.train_recall.reset()
         self.train_f1.reset()
 
-    def validation_step(self, batch: dict, batch_idx: int) -> None:
+    def validation_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> None:
         _, preds, labels = self._shared_step(batch)
-        self.val_accuracy.update(preds, labels)
-        self.val_precision.update(preds, labels)
-        self.val_recall.update(preds, labels)
-        self.val_f1.update(preds, labels)
+        if dataloader_idx == 0:
+            self.val_accuracy.update(preds, labels)
+            self.val_precision.update(preds, labels)
+            self.val_recall.update(preds, labels)
+            self.val_f1.update(preds, labels)
+        elif dataloader_idx == 1:
+            self.unseen_val_accuracy.update(preds, labels)
+            self.unseen_val_precision.update(preds, labels)
+            self.unseen_val_recall.update(preds, labels)
+            self.unseen_val_f1.update(preds, labels)
 
     def on_validation_epoch_end(self) -> None:
         self.log("val_accuracy", self.val_accuracy.compute(), prog_bar=True)
@@ -97,6 +109,15 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.val_precision.reset()
         self.val_recall.reset()
         self.val_f1.reset()
+
+        self.log("unseen_val_accuracy", self.unseen_val_accuracy.compute())
+        self.log("unseen_val_precision", self.unseen_val_precision.compute())
+        self.log("unseen_val_recall", self.unseen_val_recall.compute())
+        self.log("unseen_val_f1", self.unseen_val_f1.compute())
+        self.unseen_val_accuracy.reset()
+        self.unseen_val_precision.reset()
+        self.unseen_val_recall.reset()
+        self.unseen_val_f1.reset()
 
     def set_test_prefix(self, prefix: str) -> None:
         """Set the metric prefix for the current test run (e.g. 'test', 'unseen_val')."""

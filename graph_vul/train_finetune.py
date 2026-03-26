@@ -51,8 +51,13 @@ def train(
     val_ds = FuncFinetuneDataset(split="val", tokenizer=tokenizer)
     test_ds = FuncFinetuneDataset(split="test", tokenizer=tokenizer)
 
+    unseen_val_ds = FuncFinetuneDataset(split="unseen_val", tokenizer=tokenizer)
+
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
+    )
+    unseen_val_loader = DataLoader(
+        unseen_val_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
     )
     test_loader = DataLoader(
         test_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
@@ -74,8 +79,8 @@ def train(
     )
 
     logger.info(
-        "Train: %d functions (%d pos, %d neg), Val: %d, Test: %d",
-        len(train_ds), int(num_pos), int(num_neg), len(val_ds), len(test_ds),
+        "Train: %d functions (%d pos, %d neg), Val: %d, Unseen Val: %d, Test: %d",
+        len(train_ds), int(num_pos), int(num_neg), len(val_ds), len(unseen_val_ds), len(test_ds),
     )
     logger.info(
         "Effective batch size: %d (batch=%d x accum=%d)",
@@ -120,14 +125,14 @@ def train(
         gradient_clip_val=1.0,
     )
 
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=[val_loader, unseen_val_loader])
 
     # Test on seen CWEs
     model.set_test_prefix("test")
     trainer.test(model, dataloaders=test_loader, ckpt_path="best")
 
-    # Test on unseen CWE splits
-    unseen_splits = ["unseen_val", "unseen_test"]
+    # Test on unseen_test (unseen_val is already evaluated every epoch)
+    unseen_splits = ["unseen_test"]
     for split_name in unseen_splits:
         ds = FuncFinetuneDataset(split=split_name, tokenizer=tokenizer)
         if len(ds) == 0:
@@ -142,7 +147,7 @@ def train(
 
     # Write DVC metrics
     metrics = {}
-    all_prefixes = ["val", "test", "train"] + unseen_splits
+    all_prefixes = ["val", "unseen_val", "test", "train"] + unseen_splits
     for prefix in all_prefixes:
         for metric in ("accuracy", "precision", "recall", "f1"):
             key = f"{prefix}_{metric}"
