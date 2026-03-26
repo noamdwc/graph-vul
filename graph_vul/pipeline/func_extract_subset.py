@@ -1,10 +1,9 @@
-"""Extract a function-level CWE-119 subset with project-size and token-length filters.
+"""Extract a function-level multi-CWE subset with project-size and token-length filters.
 
-Keeps all CWE-119 rows after applying:
+Keeps rows for all configured CWEs (training + held-out) after applying:
 - Deduplication (exact code matches)
-- Project filter: keep only projects with 50-2000 CWE-119 rows and >= 3 vulnerable
 - Token filter: drop functions with >= 513 whitespace tokens
-- Per-project cap: max 150 rows per project (preserving vul/benign ratio)
+- Per-CWE project filter: keep only (project, cwe) pairs with 50-2000 rows
 - Output to data/func_subset.csv (separate from existing data/subset.csv)
 """
 
@@ -18,7 +17,7 @@ import pandas as pd
 
 from graph_vul.config import (
     BIGVUL_CSV,
-    CWE_ID,
+    CWE_IDS,
     DEDUPLICATE_CODE,
     FUNC_MAX_PROJECT_ROWS,
     FUNC_MAX_WHITESPACE_TOKENS,
@@ -26,6 +25,7 @@ from graph_vul.config import (
     FUNC_SUBSET_CSV,
     FUNC_SUBSET_MANIFEST,
     FUNC_SUBSET_REPORT,
+    HELDOUT_CWE_IDS,
     SEED,
 )
 
@@ -105,19 +105,18 @@ def _deduplicate(df: pd.DataFrame) -> pd.DataFrame:
 # Project filtering
 # ---------------------------------------------------------------------------
 
-def _filter_projects(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only projects with row count in [MIN, MAX]."""
-    project_counts = df.groupby("project").size()
-
-    eligible = set()
-    for project, count in project_counts.items():
-        if FUNC_MIN_PROJECT_ROWS <= count <= FUNC_MAX_PROJECT_ROWS:
-            eligible.add(project)
+def _filter_projects_per_cwe(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only (project, cwe_id) pairs with row count in [MIN, MAX]."""
+    pair_counts = df.groupby(["project", "cwe_id"]).size().reset_index(name="_count")
+    eligible = pair_counts[
+        (pair_counts["_count"] >= FUNC_MIN_PROJECT_ROWS)
+        & (pair_counts["_count"] <= FUNC_MAX_PROJECT_ROWS)
+    ][["project", "cwe_id"]]
 
     before = len(df)
-    df = df[df["project"].isin(eligible)]
+    df = df.merge(eligible, on=["project", "cwe_id"], how="inner")
     logger.info(
-        "Project filter: %d eligible projects, %d -> %d rows",
+        "Per-CWE project filter: %d eligible (project, cwe) pairs, %d -> %d rows",
         len(eligible), before, len(df),
     )
     return df
@@ -141,18 +140,21 @@ def _filter_token_length(df: pd.DataFrame) -> pd.DataFrame:
 
 def _generate_manifest(
     subset: pd.DataFrame,
-    selected_cves: list[str],
     config: dict,
 ) -> dict:
-    cve_details = []
-    for cve_id in selected_cves:
-        rows = subset[subset["cve_id"] == cve_id]
-        cve_details.append({
-            "cve_id": cve_id,
-            "project": rows["project"].iloc[0] if len(rows) > 0 else "unknown",
-            "total_rows": int(len(rows)),
-            "vulnerable": int((rows["vul"] == 1).sum()),
-            "benign": int((rows["vul"] == 0).sum()),
+    # Per-CWE breakdown
+    cwe_details = []
+    for cwe_id in sorted(subset["cwe_id"].unique()):
+        cwe_rows = subset[subset["cwe_id"] == cwe_id]
+        held_out = cwe_id in HELDOUT_CWE_IDS
+        cwe_details.append({
+            "cwe_id": cwe_id,
+            "held_out": held_out,
+            "total_rows": int(len(cwe_rows)),
+            "vulnerable": int((cwe_rows["vul"] == 1).sum()),
+            "benign": int((cwe_rows["vul"] == 0).sum()),
+            "projects": int(cwe_rows["project"].nunique()),
+            "cves": int(cwe_rows["cve_id"].nunique()),
         })
 
     project_counts = subset.groupby("project").size().to_dict()
@@ -172,8 +174,9 @@ def _generate_manifest(
             "benign": int((subset["vul"] == 0).sum()),
             "unique_cves": int(subset["cve_id"].nunique()),
             "unique_projects": int(subset["project"].nunique()),
+            "unique_cwes": int(subset["cwe_id"].nunique()),
         },
-        "selected_cves": cve_details,
+        "cwe_details": cwe_details,
         "project_counts": project_counts,
         "metadata_distributions": meta_dist,
     }
@@ -189,9 +192,9 @@ def _generate_report(manifest: dict) -> str:
         "",
         "## Configuration",
         "",
-        f"- Project row range: {cfg.get('min_project_rows', 'N/A')}-{cfg.get('max_project_rows', 'N/A')}",
-        f"- Min vulnerable per project: {cfg.get('min_vul_per_project', 'N/A')}",
-        f"- Max rows per project: {cfg.get('max_rows_per_project', 'N/A')}",
+        f"- Training CWEs: {', '.join(cfg.get('cwe_ids', []))}",
+        f"- Held-out CWEs: {', '.join(cfg.get('heldout_cwe_ids', []))}",
+        f"- Per-CWE project row range: {cfg.get('min_project_rows', 'N/A')}-{cfg.get('max_project_rows', 'N/A')}",
         f"- Max whitespace tokens: {cfg.get('max_whitespace_tokens', 'N/A')}",
         f"- Deduplicate code: {cfg.get('deduplicate_code', 'N/A')}",
         f"- Seed: {cfg.get('seed', 'N/A')}",
@@ -202,19 +205,23 @@ def _generate_report(manifest: dict) -> str:
         f"- **Vulnerable:** {s['vulnerable']}",
         f"- **Benign:** {s['benign']}",
         f"- **Benign/Vulnerable ratio:** {s['benign'] / max(s['vulnerable'], 1):.2f}",
+        f"- **Unique CWEs:** {s['unique_cwes']}",
         f"- **Unique CVEs:** {s['unique_cves']}",
         f"- **Unique projects:** {s['unique_projects']}",
         "",
-        "## Selected CVEs",
+        "## Per-CWE Breakdown",
         "",
-        "| CVE | Project | Total | Vulnerable | Benign |",
-        "|-----|---------|-------|------------|--------|",
+        "| CWE | Held-out | Total | Vulnerable | Benign | Vul % | Projects | CVEs |",
+        "|-----|----------|-------|------------|--------|-------|----------|------|",
     ]
 
-    for cve in m["selected_cves"]:
+    for cwe in m["cwe_details"]:
+        vul_pct = cwe["vulnerable"] / max(cwe["total_rows"], 1) * 100
+        held_out_str = "yes" if cwe["held_out"] else ""
         lines.append(
-            f"| {cve['cve_id']} | {cve['project']} | {cve['total_rows']} | "
-            f"{cve['vulnerable']} | {cve['benign']} |"
+            f"| {cwe['cwe_id']} | {held_out_str} | {cwe['total_rows']} | "
+            f"{cwe['vulnerable']} | {cwe['benign']} | {vul_pct:.1f} | "
+            f"{cwe['projects']} | {cwe['cves']} |"
         )
 
     lines.extend(["", "## Project Distribution", ""])
@@ -257,14 +264,22 @@ def extract_func_subset(
     logger.info("Reading Big-Vul CSV from %s", src)
     df = _read_bigvul_csv(src)
 
-    # Filter to CWE-119
-    all_cwe = df[df["cwe_id"] == CWE_ID]
+    # Filter to all target CWEs (training + held-out)
+    all_target_cwes = CWE_IDS + HELDOUT_CWE_IDS
+    all_cwe = df[df["cwe_id"].isin(all_target_cwes)]
     logger.info(
-        "CWE-119 pool: %d total rows (%d vul, %d benign)",
+        "Multi-CWE pool (%d CWEs): %d total rows (%d vul, %d benign)",
+        len(all_target_cwes),
         len(all_cwe),
         int((all_cwe["vul"] == 1).sum()),
         int((all_cwe["vul"] == 0).sum()),
     )
+    for cwe_id in all_target_cwes:
+        cwe_rows = all_cwe[all_cwe["cwe_id"] == cwe_id]
+        logger.info(
+            "  %s: %d rows (%d vul)",
+            cwe_id, len(cwe_rows), int((cwe_rows["vul"] == 1).sum()),
+        )
 
     # Derive metadata
     all_cwe = _derive_metadata(all_cwe)
@@ -273,11 +288,11 @@ def extract_func_subset(
     if deduplicate:
         all_cwe = _deduplicate(all_cwe)
 
-    # Apply project-size filter
-    all_cwe = _filter_projects(all_cwe)
+    # Apply token-length filter (before project filter so counts are accurate)
+    all_cwe = _filter_token_length(all_cwe)
 
-    # Apply token-length filter
-    subset = _filter_token_length(all_cwe)
+    # Apply per-CWE project-size filter
+    subset = _filter_projects_per_cwe(all_cwe)
 
     if len(subset) == 0:
         logger.error("No rows remaining after filtering — check configuration and input data")
@@ -299,8 +314,9 @@ def extract_func_subset(
         len(subset), achieved_vul, achieved_benign, dst,
     )
 
-    selected_cves = sorted(subset["cve_id"].unique().tolist())
     config_dict = {
+        "cwe_ids": list(CWE_IDS),
+        "heldout_cwe_ids": list(HELDOUT_CWE_IDS),
         "min_project_rows": FUNC_MIN_PROJECT_ROWS,
         "max_project_rows": FUNC_MAX_PROJECT_ROWS,
         "max_whitespace_tokens": FUNC_MAX_WHITESPACE_TOKENS,
@@ -309,7 +325,7 @@ def extract_func_subset(
     }
 
     subset_with_meta = _derive_metadata(subset)
-    manifest = _generate_manifest(subset_with_meta, selected_cves, config_dict)
+    manifest = _generate_manifest(subset_with_meta, config_dict)
 
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
@@ -326,7 +342,7 @@ def extract_func_subset(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Extract function-level CWE-119 subset")
+    parser = argparse.ArgumentParser(description="Extract function-level multi-CWE subset")
     parser.add_argument("--input", type=str, default=None, help="Path to Big-Vul CSV")
     parser.add_argument("--output", type=str, default=None, help="Path to output subset CSV")
     parser.add_argument("--manifest", type=str, default=None, help="Path to output manifest JSON")

@@ -13,7 +13,7 @@ import pandas as pd
 
 from graph_vul.config import (
     BIGVUL_CSV,
-    CWE_ID,
+    CWE_IDS,
     DEDUPLICATE_CODE,
     SEED,
     SUBSET_CSV,
@@ -214,8 +214,8 @@ def extract_subset(
     logger.info("Reading Big-Vul CSV from %s", src)
     df = _read_bigvul_csv(src)
 
-    # Filter to CWE-119
-    all_cwe = df[df["cwe_id"] == CWE_ID]
+    # Filter to CWE-119 (graph pipeline uses first training CWE)
+    all_cwe = df[df["cwe_id"] == CWE_IDS[0]]
     logger.info(
         "CWE-119 pool: %d total rows (%d vul, %d benign)",
         len(all_cwe),

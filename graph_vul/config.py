@@ -14,7 +14,8 @@ SUBSET_REPORT = DATA_DIR / "subset_report.md"
 CHECKPOINT_PATH = DATA_DIR / "best_model.ckpt"
 
 # Data pipeline
-CWE_ID = "CWE-119"
+CWE_IDS = ["CWE-119", "CWE-125", "CWE-20", "CWE-476", "CWE-190", "CWE-787"]
+HELDOUT_CWE_IDS = ["CWE-200", "CWE-416"]
 
 # Subset extraction
 DEDUPLICATE_CODE = True

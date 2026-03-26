@@ -12,6 +12,7 @@ import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold
 
 from graph_vul.config import (
+    HELDOUT_CWE_IDS,
     SEED,
     SPLIT_ASSIGNMENTS,
     SPLIT_REPORT,
@@ -89,6 +90,17 @@ def _validate_splits(df: pd.DataFrame, assignments: pd.DataFrame) -> list[str]:
         if overlap:
             warnings.append(f"PROJECT OVERLAP between {s1} and {s2}: {overlap}")
 
+    # Check for function-level code leakage across splits
+    if "func_before" in merged.columns:
+        for s1, s2 in [("train", "test"), ("train", "val"), ("val", "test")]:
+            codes_s1 = set(merged.loc[merged["split"] == s1, "func_before"].dropna())
+            codes_s2 = set(merged.loc[merged["split"] == s2, "func_before"].dropna())
+            code_overlap = len(codes_s1 & codes_s2)
+            if code_overlap > 0:
+                warnings.append(
+                    f"CODE LEAKAGE: {code_overlap} identical func_before texts in both {s1} and {s2}"
+                )
+
     # Check split sizes
     total = len(merged)
     for split_name in ["train", "val", "test"]:
@@ -139,6 +151,19 @@ def _generate_split_report(
 
     lines.append(f"| **total** | {len(merged)} | {int((merged['vul']==1).sum())} | "
                  f"{int((merged['vul']==0).sum())} | {(merged['vul']==1).mean():.2%} |")
+
+    # Per-CWE breakdown per split
+    if "cwe_id" in merged.columns:
+        lines.extend(["", "## Per-CWE Breakdown", ""])
+        lines.append("| Split | CWE | Total | Vulnerable | Benign |")
+        lines.append("|-------|-----|-------|------------|--------|")
+        for split_name in ["train", "val", "test"]:
+            split_df = merged[merged["split"] == split_name]
+            for cwe_id in sorted(split_df["cwe_id"].unique()):
+                cwe_rows = split_df[split_df["cwe_id"] == cwe_id]
+                vul = int((cwe_rows["vul"] == 1).sum())
+                benign = int((cwe_rows["vul"] == 0).sum())
+                lines.append(f"| {split_name} | {cwe_id} | {len(cwe_rows)} | {vul} | {benign} |")
 
     # CVE coverage
     lines.extend(["", "## CVE Coverage", ""])
@@ -230,7 +255,18 @@ def split_data(
         except ValueError:
             df[col + "_bucket"] = "medium"
 
-    # Assign splits (stratified by label, grouped by project)
+    # Exclude held-out CWE rows — they are reserved for separate evaluation
+    has_cwe = "cwe_id" in df.columns
+    if has_cwe and HELDOUT_CWE_IDS:
+        heldout_mask = df["cwe_id"].isin(HELDOUT_CWE_IDS)
+        n_heldout = heldout_mask.sum()
+        df = df[~heldout_mask].copy()
+        logger.info(
+            "Excluded held-out CWEs (%s): %d rows removed, %d remaining",
+            ", ".join(HELDOUT_CWE_IDS), n_heldout, len(df),
+        )
+
+    # Assign splits on training CWEs (stratified by label, grouped by project)
     assignments = _assign_splits(df, seed)
 
     # Validate
