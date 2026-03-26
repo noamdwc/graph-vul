@@ -2,20 +2,22 @@ stages:
   data_ingestion:
     cmd: python scripts/download_bigvul.py
     deps:
-      - scripts/download_bigvul.py
+    - scripts/download_bigvul.py
     outs:
-      - data/bigvul.csv
+    - data/bigvul.csv
 
   extract_subset:
-    cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv --output data/subset.csv --manifest data/subset_manifest.json --report data/subset_report.md
+    cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv 
+      --output data/subset.csv --manifest data/subset_manifest.json --report 
+      data/subset_report.md
     deps:
-      - data/bigvul.csv
-      - graph_vul/pipeline/extract_subset.py
-      - graph_vul/config.py
+    - data/bigvul.csv
+    - graph_vul/pipeline/extract_subset.py
+    - graph_vul/config.py
     outs:
-      - data/subset.csv
-      - data/subset_manifest.json
-      - data/subset_report.md
+    - data/subset.csv
+    - data/subset_manifest.json
+    - data/subset_report.md
 
   # joern_export:
   #   cmd: python -m graph_vul.pipeline.joern_export --input data/subset.csv --output data/raw
@@ -36,21 +38,23 @@ stages:
   #     - data/processed/code_embeddings
 
   embed_cwe:
-    cmd: python -m graph_vul.pipeline.embed_cwe --input data/cwe_descriptions.json --output data/processed/cwe_embeddings
+    cmd: python -m graph_vul.pipeline.embed_cwe --input 
+      data/cwe_descriptions.json --output data/processed/cwe_embeddings
     deps:
-      - data/cwe_descriptions.json
-      - graph_vul/pipeline/embed_cwe.py
-      - graph_vul/pipeline/embed_utils.py
+    - data/cwe_descriptions.json
+    - graph_vul/pipeline/embed_cwe.py
+    - graph_vul/pipeline/embed_utils.py
     outs:
-      - data/processed/cwe_embeddings
+    - data/processed/cwe_embeddings
 
   split_data:
-    cmd: python -m graph_vul.pipeline.split_data --input data/subset.csv --output data/splits --seed 42
+    cmd: python -m graph_vul.pipeline.split_data --input data/subset.csv 
+      --output data/splits --seed 42
     deps:
-      - data/subset.csv
-      - graph_vul/pipeline/split_data.py
+    - data/subset.csv
+    - graph_vul/pipeline/split_data.py
     outs:
-      - data/splits
+    - data/splits
 
   # train:
   #   cmd: python -m graph_vul.train --epochs 35 --batch-size 32 --lr 1e-5 --seed 42
@@ -70,43 +74,63 @@ stages:
   func_extract_subset:
     cmd: python -m graph_vul.pipeline.func_extract_subset
     deps:
-      - data/bigvul.csv
-      - graph_vul/pipeline/func_extract_subset.py
-      - graph_vul/config.py
+    - data/bigvul.csv
+    - graph_vul/pipeline/func_extract_subset.py
+    - graph_vul/config.py
     outs:
-      - data/func_subset.csv
-      - data/func_subset_manifest.json
-      - data/func_subset_report.md
+    - data/func_subset.csv
+    - data/func_subset_manifest.json
+    - data/func_subset_report.md
 
   func_embed:
     cmd: python -m graph_vul.pipeline.embed_functions
     deps:
-      - data/func_subset.csv
-      - graph_vul/pipeline/embed_functions.py
-      - graph_vul/pipeline/embed_utils.py
+    - data/func_subset.csv
+    - graph_vul/pipeline/embed_functions.py
+    - graph_vul/pipeline/embed_utils.py
     outs:
-      - data/processed/func_embeddings
+    - data/processed/func_embeddings
 
   func_split:
-    cmd: python -m graph_vul.pipeline.split_data --input data/func_subset.csv --output data/func_splits
+    cmd: python -m graph_vul.pipeline.split_data --input data/func_subset.csv 
+      --output data/func_splits
     deps:
-      - data/func_subset.csv
-      - graph_vul/pipeline/split_data.py
+    - data/func_subset.csv
+    - graph_vul/pipeline/split_data.py
     outs:
-      - data/func_splits
+    - data/func_splits
 
   func_train:
-    cmd: python -m graph_vul.train_baseline --epochs 50 --batch-size 64 --lr 1e-3
+    cmd: python -m graph_vul.train_baseline --epochs 50 --batch-size 64 --lr 
+      1e-3
     deps:
-      - data/processed/func_embeddings
-      - data/processed/cwe_embeddings
-      - data/func_splits
-      - graph_vul/train_baseline.py
-      - graph_vul/dataset/func_dataset.py
-      - graph_vul/model/func_classifier.py
-      - graph_vul/model/func_lit_module.py
+    - data/func_splits
+    - data/processed/cwe_embeddings
+    - data/processed/func_embeddings
+    - graph_vul/dataset/func_dataset.py
+    - graph_vul/model/func_classifier.py
+    - graph_vul/model/func_lit_module.py
+    - graph_vul/train_baseline.py
     outs:
-      - data/func_baseline_model.ckpt
+    - data/func_baseline_model.ckpt
     metrics:
-      - data/func_metrics.json:
-          cache: false
+    - data/func_metrics.json:
+        cache: false
+
+    frozen: true
+  func_finetune:
+    cmd: python -m graph_vul.train_finetune --epochs 10 --batch-size 8 
+      --encoder-lr 2e-5 --head-lr 1e-3 --grad-accum 8
+    deps:
+    - data/func_subset.csv
+    - data/processed/cwe_embeddings
+    - data/func_splits
+    - graph_vul/train_finetune.py
+    - graph_vul/dataset/func_finetune_dataset.py
+    - graph_vul/model/func_finetune_model.py
+    - graph_vul/model/func_finetune_lit_module.py
+    outs:
+    - data/func_finetune_model.ckpt
+    metrics:
+    - data/func_finetune_metrics.json:
+        cache: false

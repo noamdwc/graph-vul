@@ -14,7 +14,6 @@ import logging
 import zipfile
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from graph_vul.config import (
@@ -22,10 +21,8 @@ from graph_vul.config import (
     CWE_ID,
     DEDUPLICATE_CODE,
     FUNC_MAX_PROJECT_ROWS,
-    FUNC_MAX_ROWS_PER_PROJECT,
     FUNC_MAX_WHITESPACE_TOKENS,
     FUNC_MIN_PROJECT_ROWS,
-    FUNC_MIN_VUL_PER_PROJECT,
     FUNC_SUBSET_CSV,
     FUNC_SUBSET_MANIFEST,
     FUNC_SUBSET_REPORT,
@@ -109,16 +106,13 @@ def _deduplicate(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _filter_projects(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only projects with row count in [MIN, MAX] and >= MIN_VUL vulnerable functions."""
+    """Keep only projects with row count in [MIN, MAX]."""
     project_counts = df.groupby("project").size()
-    project_vul_counts = df[df["vul"] == 1].groupby("project").size()
 
     eligible = set()
     for project, count in project_counts.items():
         if FUNC_MIN_PROJECT_ROWS <= count <= FUNC_MAX_PROJECT_ROWS:
-            vul_count = project_vul_counts.get(project, 0)
-            if vul_count >= FUNC_MIN_VUL_PER_PROJECT:
-                eligible.add(project)
+            eligible.add(project)
 
     before = len(df)
     df = df[df["project"].isin(eligible)]
@@ -139,34 +133,6 @@ def _filter_token_length(df: pd.DataFrame) -> pd.DataFrame:
         logger.info("Token filter removed %d long functions (%d -> %d)", before - after, before, after)
     return df
 
-
-def _cap_projects(
-    df: pd.DataFrame,
-    max_per_project: int,
-    seed: int,
-) -> pd.DataFrame:
-    """Downsample large projects to max_per_project rows, preserving vul/benign ratio."""
-    rng = np.random.RandomState(seed)
-    parts = []
-    for project, group in df.groupby("project"):
-        if len(group) <= max_per_project:
-            parts.append(group)
-            continue
-        # Stratified downsample: keep vul/benign ratio
-        vul = group[group["vul"] == 1]
-        benign = group[group["vul"] == 0]
-        vul_ratio = len(vul) / len(group)
-        n_vul = max(1, round(max_per_project * vul_ratio))
-        n_benign = max_per_project - n_vul
-        n_vul = min(n_vul, len(vul))
-        n_benign = min(n_benign, len(benign))
-        parts.append(vul.sample(n=n_vul, random_state=rng.randint(2**31)))
-        parts.append(benign.sample(n=n_benign, random_state=rng.randint(2**31)))
-        logger.info("Capped project %s: %d -> %d rows", project, len(group), n_vul + n_benign)
-
-    result = pd.concat(parts, ignore_index=True)
-    result = result.sample(frac=1, random_state=seed).reset_index(drop=True)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -311,10 +277,7 @@ def extract_func_subset(
     all_cwe = _filter_projects(all_cwe)
 
     # Apply token-length filter
-    all_cwe = _filter_token_length(all_cwe)
-
-    # Cap per-project row count to normalize project sizes
-    subset = _cap_projects(all_cwe, FUNC_MAX_ROWS_PER_PROJECT, seed)
+    subset = _filter_token_length(all_cwe)
 
     if len(subset) == 0:
         logger.error("No rows remaining after filtering — check configuration and input data")
@@ -340,8 +303,6 @@ def extract_func_subset(
     config_dict = {
         "min_project_rows": FUNC_MIN_PROJECT_ROWS,
         "max_project_rows": FUNC_MAX_PROJECT_ROWS,
-        "min_vul_per_project": FUNC_MIN_VUL_PER_PROJECT,
-        "max_rows_per_project": FUNC_MAX_ROWS_PER_PROJECT,
         "max_whitespace_tokens": FUNC_MAX_WHITESPACE_TOKENS,
         "deduplicate_code": deduplicate,
         "seed": seed,

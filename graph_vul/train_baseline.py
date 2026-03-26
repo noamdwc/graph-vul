@@ -64,10 +64,8 @@ def train(
         len(train_ds), int(num_pos), int(num_neg), len(val_ds), len(test_ds),
     )
 
-    # Model — pos_weight compensates for class imbalance in the loss
-    pos_weight = num_neg / max(num_pos, 1)
-    logger.info("pos_weight=%.2f (neg/pos ratio)", pos_weight)
-    model = FuncLitModule(lr=lr, pos_weight=pos_weight)
+    # Model — sampler already balances classes, no pos_weight needed
+    model = FuncLitModule(lr=lr)
 
     # Logger
     wandb_logger = WandbLogger(
