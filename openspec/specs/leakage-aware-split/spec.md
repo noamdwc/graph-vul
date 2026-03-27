@@ -1,13 +1,13 @@
 ### Requirement: Project-disjoint splits
-The split stage SHALL assign every row to exactly one of train, val, or test. No project SHALL appear in more than one split. All rows from a given project SHALL be assigned to the same split.
+The split stage SHALL assign every row to exactly one of `train`, `val`, `test`, `unseen_val`, or `unseen_test`. No project SHALL appear in more than one split. All rows from a given project SHALL be assigned to the same split.
 
-#### Scenario: Zero project overlap
+#### Scenario: Zero project overlap across all pairs
 - **WHEN** the split completes
-- **THEN** the intersection of projects across any two splits is empty
+- **THEN** the intersection of projects across any two of the five splits is empty
 
 #### Scenario: All rows assigned
 - **WHEN** the split completes
-- **THEN** every row in the input subset has a split assignment
+- **THEN** every row in the input subset has a split assignment in exactly one of the five splits
 
 ---
 
@@ -25,20 +25,28 @@ The split stage SHALL designate `HELD_OUT_PROJECT_COUNT` projects as held-out. A
 ---
 
 ### Requirement: Val/test split of held-out projects
-Held-out project rows SHALL be divided between val and test splits, approximately equally by row count. If there are enough held-out projects, different projects SHALL go to different splits when feasible.
+Unseen-pool projects SHALL be split into `unseen_val` and `unseen_test` by project, using `StratifiedGroupKFold(n_splits=2)` on the binary label. The default split is 50/50 by project count, configurable via `UNSEEN_VAL_FRAC`.
 
-#### Scenario: Held-out rows distributed to val and test
-- **WHEN** 3 projects are held out
-- **THEN** some held-out project rows appear in val and some in test, with roughly balanced sizes
+#### Scenario: Unseen splits are project-disjoint
+- **WHEN** the split completes
+- **THEN** no project appears in both `unseen_val` and `unseen_test`
+
+#### Scenario: Unseen splits have held-out CWEs
+- **WHEN** the split completes
+- **THEN** both `unseen_val` and `unseen_test` contain rows with held-out CWE IDs
 
 ---
 
-### Requirement: Remaining projects assigned to train
-All rows from non-held-out projects SHALL be assigned to the train split.
+### Requirement: Remaining projects assigned via seen splits
+All rows from projects NOT in the unseen pool SHALL be assigned to `train`, `val`, or `test` using `StratifiedGroupKFold`, stratified on the `vul` label and grouped by `project`. Default ratios: train ~80%, val ~10%, test ~10% (configurable via `VAL_SPLIT` and `TEST_SPLIT`).
 
-#### Scenario: Train contains only seen projects
+#### Scenario: Seen pool split into three
 - **WHEN** the split completes
-- **THEN** train contains rows exclusively from non-held-out projects
+- **THEN** `train`, `val`, and `test` contain only projects from the seen pool
+
+#### Scenario: Approximate ratio achieved
+- **WHEN** the split completes with default ratios
+- **THEN** train contains roughly 80% of seen-pool rows, val ~10%, test ~10%
 
 ---
 
@@ -74,12 +82,74 @@ The split stage SHALL produce a CSV file with columns `sample_id` and `split` (v
 ---
 
 ### Requirement: Split diagnostics report
-The split stage SHALL produce a Markdown report containing: split sizes, class counts and ratios per split, unique CVEs per split, unique projects per split, project overlap verification (must be zero), held-out project summary, metadata bucket distributions per split, and warnings if constraints are infeasible.
+The split stage SHALL produce a Markdown report containing: split sizes with vulnerable/benign counts and ratios for all five splits, per-CWE breakdown per split, CVE coverage per split, project coverage per split, project overlap verification for all 10 pairs, per-split project details, metadata bucket distributions, project exclusivity section, train balancing section, and warnings.
 
-#### Scenario: Report written with overlap check
-- **WHEN** the split completes
-- **THEN** the report explicitly states that project overlap is zero and lists held-out projects
+#### Scenario: Report covers all five splits
+- **WHEN** the report is generated
+- **THEN** it SHALL include statistics for train, val, test, unseen_val, and unseen_test
 
 #### Scenario: Warning on skewed split
 - **WHEN** a split has fewer than 5% of total rows or has only one class
-- **THEN** the report includes a warning about the skewed split
+- **THEN** the report includes a warning
+
+---
+
+### Requirement: Held-out CWE implies full project holdout
+The split stage SHALL identify all projects that contain any row with a held-out CWE ID. ALL rows from those projects (regardless of their CWE) SHALL be moved to the unseen pool. No row from an unseen-pool project SHALL appear in `train`, `val`, or `test`.
+
+#### Scenario: Project with mixed CWEs fully excluded from seen splits
+- **WHEN** project-X has rows with CWE-119 (seen) and CWE-416 (held-out)
+- **THEN** ALL rows from project-X (including CWE-119 rows) SHALL be in `unseen_val` or `unseen_test`
+- **AND** zero rows from project-X SHALL appear in `train`, `val`, or `test`
+
+#### Scenario: Unseen pool contains only projects touching held-out CWEs
+- **WHEN** the split completes
+- **THEN** every project in `unseen_val` or `unseen_test` SHALL have at least one row with a held-out CWE ID
+
+---
+
+### Requirement: Held-out CWE eligibility validation
+Before splitting, the stage SHALL validate each configured held-out CWE against thresholds: `MIN_HELDOUT_TOTAL_ROWS`, `MIN_HELDOUT_VUL_ROWS`, `MIN_HELDOUT_PROJECTS`. If any held-out CWE fails a threshold, the stage SHALL raise an error with a clear message identifying the failing CWE and which threshold was violated.
+
+#### Scenario: CWE too small rejected
+- **WHEN** held-out CWE-999 has only 5 total rows and `MIN_HELDOUT_TOTAL_ROWS=30`
+- **THEN** the stage SHALL fail with an error naming CWE-999 and the threshold
+
+#### Scenario: CWE with insufficient projects rejected
+- **WHEN** held-out CWE-999 appears in only 1 project and `MIN_HELDOUT_PROJECTS=2`
+- **THEN** the stage SHALL fail with an error naming CWE-999 and the threshold
+
+#### Scenario: All held-out CWEs eligible
+- **WHEN** all held-out CWEs meet all thresholds
+- **THEN** the stage SHALL proceed to splitting without error
+
+---
+
+### Requirement: Strict cross-regime overlap validation
+The validation SHALL check project overlap across ALL 10 split pairs: train/val, train/test, val/test, unseen_val/unseen_test, train/unseen_val, train/unseen_test, val/unseen_val, val/unseen_test, test/unseen_val, test/unseen_test. ALL overlaps SHALL be zero.
+
+#### Scenario: All pairs checked
+- **WHEN** the validation runs
+- **THEN** it SHALL check and report on all 10 split pairs
+
+#### Scenario: Cross-regime overlap detected
+- **WHEN** a project appears in both `train` and `unseen_val`
+- **THEN** a validation warning SHALL be emitted naming the overlapping project
+
+---
+
+### Requirement: Seen regime excludes held-out CWEs
+No row with a held-out CWE ID SHALL appear in `train`, `val`, or `test`. This is a consequence of full-project holdout but SHALL be independently verified.
+
+#### Scenario: Held-out CWE absent from seen splits
+- **WHEN** the split completes
+- **THEN** zero rows in `train`, `val`, or `test` have a `cwe_id` matching any held-out CWE
+
+---
+
+### Requirement: Project exclusivity report
+The split report SHALL include a "Project Exclusivity" section showing: zero-overlap verification for all 10 split pairs, count of projects in the seen pool, count of projects in the unseen pool, and which held-out CWEs caused each project to migrate to the unseen pool.
+
+#### Scenario: Report shows migration reasons
+- **WHEN** the report is generated
+- **THEN** it SHALL list each unseen-pool project and the held-out CWE(s) that caused its migration

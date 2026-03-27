@@ -83,3 +83,69 @@ def subset_df(bigvul_df):
 
     keep = ["sample_id", "project", "func_before", "cve_id", "cwe_id", "vul"]
     return subset[keep]
+
+
+@pytest.fixture
+def multi_cwe_subset_df():
+    """Subset with multiple CWEs including held-out CWEs sharing projects with seen CWEs.
+
+    Layout:
+    - ProjectA-F: seen CWEs only (CWE-119, CWE-125)
+    - ProjectG-H: mixed — have both seen CWEs and held-out CWEs (CWE-200, CWE-416)
+      -> these should migrate entirely to unseen pool
+    - ProjectI-J: held-out CWEs only (CWE-200, CWE-416)
+      -> these should also be in unseen pool
+    """
+    rng = np.random.RandomState(42)
+    rows = []
+
+    # Seen-only projects (6 projects, enough for train/val/test splitting)
+    seen_projects = {
+        "ProjectA": [("CWE-119", "CVE-2020-0001"), ("CWE-125", "CVE-2020-0002")],
+        "ProjectB": [("CWE-119", "CVE-2020-0003")],
+        "ProjectC": [("CWE-125", "CVE-2020-0004"), ("CWE-119", "CVE-2020-0005")],
+        "ProjectD": [("CWE-119", "CVE-2020-0006")],
+        "ProjectE": [("CWE-125", "CVE-2020-0007")],
+        "ProjectF": [("CWE-119", "CVE-2020-0008")],
+    }
+
+    # Mixed projects (have both seen and held-out CWEs)
+    mixed_projects = {
+        "ProjectG": [("CWE-119", "CVE-2020-0009"), ("CWE-200", "CVE-2020-0010")],
+        "ProjectH": [("CWE-125", "CVE-2020-0011"), ("CWE-416", "CVE-2020-0012")],
+    }
+
+    # Held-out-only projects
+    heldout_projects = {
+        "ProjectI": [("CWE-200", "CVE-2020-0013"), ("CWE-416", "CVE-2020-0014")],
+        "ProjectJ": [("CWE-200", "CVE-2020-0015")],
+    }
+
+    for project_group in [seen_projects, mixed_projects, heldout_projects]:
+        for project, cwe_cves in project_group.items():
+            for cwe_id, cve_id in cwe_cves:
+                n_vul = rng.randint(8, 25)
+                n_benign = rng.randint(20, 60)
+                for _ in range(n_vul):
+                    code_len = rng.randint(50, 5000)
+                    rows.append({
+                        "cwe_id": cwe_id,
+                        "cve_id": cve_id,
+                        "project": project,
+                        "func_before": "x" * code_len,
+                        "vul": 1,
+                    })
+                for _ in range(n_benign):
+                    code_len = rng.randint(50, 5000)
+                    rows.append({
+                        "cwe_id": cwe_id,
+                        "cve_id": cve_id,
+                        "project": project,
+                        "func_before": "y" * code_len,
+                        "vul": 0,
+                    })
+
+    df = pd.DataFrame(rows)
+    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+    df.insert(0, "sample_id", range(len(df)))
+    return df

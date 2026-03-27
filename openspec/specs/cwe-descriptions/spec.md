@@ -1,17 +1,15 @@
-### Requirement: CWE descriptions for all target CWEs
-The file `data/cwe_descriptions.json` SHALL contain description entries for all 8 CWEs: CWE-119, CWE-125, CWE-20, CWE-476, CWE-190, CWE-787, CWE-200, CWE-416.
+### Requirement: CWE descriptions for all labeled dataset CWEs
+The file `data/cwe_descriptions.json` SHALL contain description entries for every labeled CWE used by the function-subset pipeline. For the current dataset snapshot, this set contains 91 CWE IDs from the raw labeled BigVul input, including CWEs that are filtered out later in subset construction.
 
-#### Scenario: All CWEs have descriptions
+#### Scenario: All labeled dataset CWEs have descriptions
 - **WHEN** the CWE embedding pipeline reads `data/cwe_descriptions.json`
-- **THEN** it SHALL find a non-empty description string for each of the 8 target CWE IDs
+- **THEN** it SHALL find a non-empty description string for each labeled dataset CWE ID
 
-#### Scenario: Descriptions sourced from MITRE
+#### Scenario: Descriptions cover current function subset and pre-filter extras
+- **WHEN** the current `data/func_subset.csv` and `data/func_subset_manifest.json` are present
+- **THEN** the descriptions file SHALL cover all 89 CWEs in `func_subset.csv`
+- **AND** it SHALL also include the 2 labeled CWEs that exist before token-length filtering but not in the final subset
+
+#### Scenario: Descriptions sourced from MITRE wording
 - **WHEN** a CWE description is added
-- **THEN** it SHALL be the official MITRE CWE "Description" field for that CWE identifier
-
-### Requirement: Existing CWE-119 description preserved
-The existing CWE-119 entry SHALL NOT be modified.
-
-#### Scenario: CWE-119 unchanged
-- **WHEN** the descriptions file is updated with new CWEs
-- **THEN** the CWE-119 entry SHALL remain identical to its current value
+- **THEN** it SHALL reflect the corresponding MITRE CWE entry's meaning using close manual wording
