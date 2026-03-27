@@ -94,30 +94,19 @@ class FuncFinetuneLitModule(pl.LightningModule):
             self.val_precision.update(preds, labels)
             self.val_recall.update(preds, labels)
             self.val_f1.update(preds, labels)
+            self.log("val_accuracy", self.val_accuracy, on_step=False, on_epoch=True, prog_bar=True, add_dataloader_idx=False)
+            self.log("val_precision", self.val_precision, on_step=False, on_epoch=True, add_dataloader_idx=False)
+            self.log("val_recall", self.val_recall, on_step=False, on_epoch=True, add_dataloader_idx=False)
+            self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True, add_dataloader_idx=False)
         elif dataloader_idx == 1:
             self.unseen_val_accuracy.update(preds, labels)
             self.unseen_val_precision.update(preds, labels)
             self.unseen_val_recall.update(preds, labels)
             self.unseen_val_f1.update(preds, labels)
-
-    def on_validation_epoch_end(self) -> None:
-        self.log("val_accuracy", self.val_accuracy.compute(), prog_bar=True)
-        self.log("val_precision", self.val_precision.compute())
-        self.log("val_recall", self.val_recall.compute())
-        self.log("val_f1", self.val_f1.compute(), prog_bar=True)
-        self.val_accuracy.reset()
-        self.val_precision.reset()
-        self.val_recall.reset()
-        self.val_f1.reset()
-
-        self.log("unseen_val_accuracy", self.unseen_val_accuracy.compute())
-        self.log("unseen_val_precision", self.unseen_val_precision.compute())
-        self.log("unseen_val_recall", self.unseen_val_recall.compute())
-        self.log("unseen_val_f1", self.unseen_val_f1.compute())
-        self.unseen_val_accuracy.reset()
-        self.unseen_val_precision.reset()
-        self.unseen_val_recall.reset()
-        self.unseen_val_f1.reset()
+            self.log("unseen_val_accuracy", self.unseen_val_accuracy, on_step=False, on_epoch=True, prog_bar=False, add_dataloader_idx=False)
+            self.log("unseen_val_precision", self.unseen_val_precision, on_step=False, on_epoch=True, add_dataloader_idx=False)
+            self.log("unseen_val_recall", self.unseen_val_recall, on_step=False, on_epoch=True, add_dataloader_idx=False)
+            self.log("unseen_val_f1", self.unseen_val_f1, on_step=False, on_epoch=True, prog_bar=False, add_dataloader_idx=False)
 
     def set_test_prefix(self, prefix: str) -> None:
         """Set the metric prefix for the current test run (e.g. 'test', 'unseen_val')."""
