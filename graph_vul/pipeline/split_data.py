@@ -22,7 +22,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedGroupKFold
 
 from graph_vul.config import (
     BALANCE_CWE_SMOOTHING,
@@ -34,10 +33,14 @@ from graph_vul.config import (
     MIN_HELDOUT_PROJECTS,
     MIN_HELDOUT_TOTAL_ROWS,
     MIN_HELDOUT_VUL_ROWS,
+    MIN_SPLIT_FRAC,
+    MIN_SPLIT_ROWS,
     SEED,
+    SPLIT_MAJOR_CWE_TOP_K,
     SPLITS_DIR,
     SUBSET_CSV,
     TEST_SPLIT,
+    UNSEEN_VAL_FRAC,
     VAL_SPLIT,
 )
 
@@ -118,8 +121,255 @@ def _build_unseen_pool(
 
 
 # ---------------------------------------------------------------------------
-# Split assignment via StratifiedGroupKFold
+# Project-level greedy allocation
 # ---------------------------------------------------------------------------
+
+def _select_major_cwes(df: pd.DataFrame, top_k: int = SPLIT_MAJOR_CWE_TOP_K) -> list[str]:
+    """Return the dominant CWEs to track while preserving mix across splits."""
+    if "cwe_id" not in df.columns or top_k <= 0:
+        return []
+
+    source = df[df["vul"] == 1]
+    if len(source) == 0:
+        source = df
+
+    counts = source["cwe_id"].value_counts()
+    return sorted(counts.head(top_k).index.tolist())
+
+
+def _build_project_stats(
+    df: pd.DataFrame,
+    major_cwes: list[str] | None = None,
+    bucket_col: str = "code_char_len_bucket",
+) -> pd.DataFrame:
+    """Aggregate row-level data to project-level statistics for greedy assignment."""
+    agg = (
+        df.groupby("project")
+        .agg(
+            total_rows=("sample_id", "size"),
+            vulnerable_rows=("vul", "sum"),
+        )
+        .reset_index()
+    )
+    agg["benign_rows"] = agg["total_rows"] - agg["vulnerable_rows"]
+
+    major_cwes = major_cwes or []
+    for cwe_id in major_cwes:
+        counts = (
+            df[df["cwe_id"] == cwe_id]
+            .groupby("project")
+            .size()
+            .reindex(agg["project"], fill_value=0)
+            .to_numpy()
+        )
+        agg[f"cwe::{cwe_id}"] = counts
+
+    if bucket_col in df.columns:
+        bucket_values = sorted(df[bucket_col].dropna().astype(str).unique().tolist())
+        for bucket in bucket_values:
+            counts = (
+                df[df[bucket_col].astype(str) == bucket]
+                .groupby("project")
+                .size()
+                .reindex(agg["project"], fill_value=0)
+                .to_numpy()
+            )
+            agg[f"bucket::{bucket}"] = counts
+
+    return agg
+
+
+def _greedy_project_split(
+    project_stats: pd.DataFrame,
+    split_fracs: dict[str, float],
+    seed: int,
+) -> dict[str, str]:
+    """Assign projects to splits greedily, optimizing for row targets first."""
+    splits = list(split_fracs.keys())
+    total_rows = float(project_stats["total_rows"].sum())
+    total_vul = float(project_stats["vulnerable_rows"].sum())
+    global_vul_ratio = total_vul / total_rows if total_rows else 0.0
+    cwe_cols = [col for col in project_stats.columns if col.startswith("cwe::")]
+    bucket_cols = [col for col in project_stats.columns if col.startswith("bucket::")]
+
+    tracked_cols = cwe_cols + bucket_cols
+    split_targets = {
+        split: {
+            "rows": total_rows * frac,
+            "vul_rows": total_vul * frac,
+            **{col: float(project_stats[col].sum()) * frac for col in tracked_cols},
+        }
+        for split, frac in split_fracs.items()
+    }
+    base_state = {
+        split: {"rows": 0.0, "vul_rows": 0.0, **{col: 0.0 for col in tracked_cols}}
+        for split in splits
+    }
+
+    def build_state(project_to_split: dict[str, str]) -> dict[str, dict[str, float]]:
+        state = {
+            split: {"rows": 0.0, "vul_rows": 0.0, **{col: 0.0 for col in tracked_cols}}
+            for split in splits
+        }
+        for _, project in project_stats.iterrows():
+            split = project_to_split.get(str(project["project"]))
+            if split is None:
+                continue
+            state[split]["rows"] += float(project["total_rows"])
+            state[split]["vul_rows"] += float(project["vulnerable_rows"])
+            for col in tracked_cols:
+                state[split][col] += float(project[col])
+        return state
+
+    def score_state(state: dict[str, dict[str, float]]) -> float:
+        total_score = 0.0
+        for split in splits:
+            new_rows = state[split]["rows"]
+            row_target = max(split_targets[split]["rows"], 1.0)
+            row_gap = (new_rows - row_target) / row_target
+            row_penalty = row_gap ** 2
+            overshoot = max(new_rows - row_target, 0.0) / row_target
+            undershoot = max(row_target - new_rows, 0.0) / row_target
+            row_penalty += 6.0 * (overshoot ** 2)
+            row_penalty += 8.0 * (undershoot ** 2)
+
+            new_vul = state[split]["vul_rows"]
+            new_vul_ratio = new_vul / new_rows if new_rows else 0.0
+            vul_penalty = (new_vul_ratio - global_vul_ratio) ** 2
+
+            cwe_penalty = 0.0
+            for col in cwe_cols:
+                target = max(split_targets[split][col], 1.0)
+                gap = (state[split][col] - target) / target
+                cwe_penalty += gap ** 2 + 2.0 * max(gap, 0.0) ** 2
+
+            bucket_penalty = 0.0
+            for col in bucket_cols:
+                target = max(split_targets[split][col], 1.0)
+                gap = (state[split][col] - target) / target
+                bucket_penalty += gap ** 2
+
+            total_score += 100.0 * row_penalty + 8.0 * vul_penalty + 3.0 * cwe_penalty + 1.0 * bucket_penalty
+        return total_score
+
+    state = {split: values.copy() for split, values in base_state.items()}
+    project_to_split: dict[str, str] = {}
+
+    rng = np.random.RandomState(seed)
+    ordered_projects = project_stats.copy()
+    ordered_projects["_tie"] = rng.random(len(ordered_projects))
+    ordered_projects = ordered_projects.sort_values(
+        ["total_rows", "_tie", "project"],
+        ascending=[False, True, True],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    split_tie_noise = {
+        split: rng.random(len(ordered_projects)) * 1e-9
+        for split in splits
+    }
+
+    total_projects = len(ordered_projects)
+    for idx, project in ordered_projects.iterrows():
+        remaining_projects = total_projects - idx - 1
+        empty_splits = [split for split in splits if state[split]["rows"] == 0]
+
+        best_split = None
+        best_score = None
+        project_rows = float(project["total_rows"])
+        project_vul = float(project["vulnerable_rows"])
+
+        for split in splits:
+            empties_after = len(empty_splits) - (1 if state[split]["rows"] == 0 else 0)
+            if remaining_projects < empties_after:
+                continue
+
+            new_rows = state[split]["rows"] + project_rows
+            row_target = max(split_targets[split]["rows"], 1.0)
+            row_gap = (new_rows - row_target) / row_target
+            row_penalty = row_gap ** 2
+            overshoot = max(new_rows - row_target, 0.0) / row_target
+            undershoot = max(row_target - new_rows, 0.0) / row_target
+            row_penalty += 6.0 * (overshoot ** 2)
+            row_penalty += 8.0 * (undershoot ** 2)
+
+            new_vul = state[split]["vul_rows"] + project_vul
+            new_vul_ratio = new_vul / new_rows if new_rows else 0.0
+            vul_penalty = (new_vul_ratio - global_vul_ratio) ** 2
+
+            cwe_penalty = 0.0
+            for col in cwe_cols:
+                target = max(split_targets[split][col], 1.0)
+                gap = (state[split][col] + float(project[col]) - target) / target
+                cwe_penalty += gap ** 2 + 2.0 * max(gap, 0.0) ** 2
+
+            bucket_penalty = 0.0
+            for col in bucket_cols:
+                target = max(split_targets[split][col], 1.0)
+                gap = (state[split][col] + float(project[col]) - target) / target
+                bucket_penalty += gap ** 2
+
+            score = (
+                100.0 * row_penalty
+                + 8.0 * vul_penalty
+                + 3.0 * cwe_penalty
+                + 1.0 * bucket_penalty
+                + split_tie_noise[split][idx]
+            )
+            if best_score is None or score < best_score:
+                best_score = score
+                best_split = split
+
+        if best_split is None:
+            raise ValueError("Unable to assign projects while keeping all splits non-empty")
+
+        project_to_split[str(project["project"])] = best_split
+        state[best_split]["rows"] += project_rows
+        state[best_split]["vul_rows"] += project_vul
+        for col in tracked_cols:
+            state[best_split][col] += float(project[col])
+
+    # Deterministic local refinement: move whole projects when it improves the global objective.
+    project_sizes = project_stats.set_index("project")["total_rows"].to_dict()
+    current_score = score_state(build_state(project_to_split))
+    for _ in range(len(project_to_split) * max(len(splits), 1)):
+        best_move = None
+        best_score = current_score
+        split_counts = pd.Series(project_to_split).value_counts().to_dict()
+
+        for project, source_split in sorted(project_to_split.items(), key=lambda item: (-project_sizes[item[0]], item[0])):
+            if split_counts.get(source_split, 0) <= 1:
+                continue
+            for target_split in splits:
+                if target_split == source_split:
+                    continue
+                candidate = dict(project_to_split)
+                candidate[project] = target_split
+                candidate_score = score_state(build_state(candidate))
+                if candidate_score + 1e-9 < best_score:
+                    best_score = candidate_score
+                    best_move = (project, target_split)
+
+        if best_move is None:
+            break
+        project, target_split = best_move
+        project_to_split[project] = target_split
+        current_score = best_score
+
+    return project_to_split
+
+
+def _expand_project_assignments(
+    df: pd.DataFrame,
+    project_to_split: dict[str, str],
+) -> pd.DataFrame:
+    """Map project-level assignments back to row-level split assignments."""
+    assignments = df[["sample_id", "project"]].copy()
+    assignments["split"] = assignments["project"].map(project_to_split)
+    if assignments["split"].isna().any():
+        missing_projects = sorted(assignments.loc[assignments["split"].isna(), "project"].unique())
+        raise ValueError(f"Missing project assignments for: {missing_projects}")
+    return assignments[["sample_id", "split"]]
+
 
 def _assign_splits(
     df: pd.DataFrame,
@@ -127,34 +377,19 @@ def _assign_splits(
     val_frac: float = VAL_SPLIT,
     test_frac: float = TEST_SPLIT,
 ) -> pd.DataFrame:
-    """Assign seen-pool rows to train/val/test using stratified group k-fold.
+    """Assign seen-pool rows to train/val/test with project-level greedy allocation."""
+    train_frac = 1.0 - val_frac - test_frac
+    if train_frac <= 0:
+        raise ValueError("Seen split fractions must leave positive train fraction")
 
-    Groups = projects (no project spans splits), stratified on the vul label.
-    """
-    labels = df["vul"].values
-    groups = df["project"].values
-
-    # First split: separate test from (train+val)
-    n_folds_test = max(round(1.0 / test_frac), 2)
-    sgkf_test = StratifiedGroupKFold(n_splits=n_folds_test, shuffle=True, random_state=seed)
-    trainval_idx, test_idx = next(sgkf_test.split(df, labels, groups))
-
-    # Second split: separate val from train (within the trainval portion)
-    val_frac_of_trainval = val_frac / (1.0 - test_frac)
-    n_folds_val = max(round(1.0 / val_frac_of_trainval), 2)
-    sgkf_val = StratifiedGroupKFold(n_splits=n_folds_val, shuffle=True, random_state=seed)
-    df_trainval = df.iloc[trainval_idx]
-    train_rel_idx, val_rel_idx = next(
-        sgkf_val.split(df_trainval, labels[trainval_idx], groups[trainval_idx])
+    major_cwes = _select_major_cwes(df)
+    project_stats = _build_project_stats(df, major_cwes=major_cwes)
+    project_to_split = _greedy_project_split(
+        project_stats,
+        split_fracs={"train": train_frac, "val": val_frac, "test": test_frac},
+        seed=seed,
     )
-    train_idx = trainval_idx[train_rel_idx]
-    val_idx = trainval_idx[val_rel_idx]
-
-    assignments = pd.Series("train", index=df.index, name="split")
-    assignments.iloc[val_idx] = "val"
-    assignments.iloc[test_idx] = "test"
-
-    return pd.DataFrame({"sample_id": df["sample_id"], "split": assignments})
+    return _expand_project_assignments(df, project_to_split)
 
 
 # ---------------------------------------------------------------------------
@@ -165,17 +400,45 @@ def _assign_unseen_splits(
     df_unseen: pd.DataFrame,
     seed: int,
 ) -> pd.DataFrame:
-    """Split unseen-pool rows into unseen_val and unseen_test (50/50, project-disjoint)."""
-    labels = df_unseen["vul"].values
-    groups = df_unseen["project"].values
+    """Split unseen-pool rows into unseen_val and unseen_test using the same allocator."""
+    if len(df_unseen) == 0:
+        return pd.DataFrame(columns=["sample_id", "split"])
 
-    sgkf = StratifiedGroupKFold(n_splits=2, shuffle=True, random_state=seed)
-    unseen_val_idx, unseen_test_idx = next(sgkf.split(df_unseen, labels, groups))
+    major_cwes = _select_major_cwes(df_unseen)
+    project_stats = _build_project_stats(df_unseen, major_cwes=major_cwes)
+    project_to_split = _greedy_project_split(
+        project_stats,
+        split_fracs={"unseen_val": UNSEEN_VAL_FRAC, "unseen_test": 1.0 - UNSEEN_VAL_FRAC},
+        seed=seed,
+    )
+    return _expand_project_assignments(df_unseen, project_to_split)
 
-    assignments = pd.Series("unseen_val", index=df_unseen.index, name="split")
-    assignments.iloc[unseen_test_idx] = "unseen_test"
 
-    return pd.DataFrame({"sample_id": df_unseen["sample_id"], "split": assignments})
+def _enforce_min_split_sizes(
+    df: pd.DataFrame,
+    assignments: pd.DataFrame,
+    min_rows: int = MIN_SPLIT_ROWS,
+    min_frac: float = MIN_SPLIT_FRAC,
+    required_splits: tuple[str, ...] = ("val", "test"),
+) -> None:
+    """Raise if required evaluation splits are too small to be meaningful."""
+    merged = df.merge(assignments, on="sample_id")
+    total = len(merged)
+
+    errors: list[str] = []
+    for split_name in required_splits:
+        split_size = int((merged["split"] == split_name).sum())
+        if min_rows > 0 and split_size < min_rows:
+            errors.append(
+                f"{split_name}: only {split_size} rows (minimum {min_rows})"
+            )
+        if min_frac > 0 and total > 0 and split_size / total < min_frac:
+            errors.append(
+                f"{split_name}: only {split_size/total:.1%} of rows (minimum {min_frac:.1%})"
+            )
+
+    if errors:
+        raise ValueError("Split size validation failed:\n  - " + "\n  - ".join(errors))
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +894,12 @@ def split_data(
 
     # Validate all splits
     df_all = pd.concat([df_seen, df_unseen], ignore_index=True) if len(df_unseen) > 0 else df_seen
+    _enforce_min_split_sizes(
+        df_seen,
+        assignments[assignments["split"].isin(["train", "val", "test"])].copy(),
+        min_rows=MIN_SPLIT_ROWS,
+        min_frac=MIN_SPLIT_FRAC,
+    )
     warnings = _validate_splits(df_all, assignments, heldout_cwe_ids=HELDOUT_CWE_IDS if has_cwe else None)
     for w in warnings:
         logger.warning(w)

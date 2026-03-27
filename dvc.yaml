@@ -6,18 +6,18 @@ stages:
     outs:
     - data/bigvul.csv
 
-  extract_subset:
-    cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv 
-      --output data/subset.csv --manifest data/subset_manifest.json --report 
-      data/subset_report.md
-    deps:
-    - data/bigvul.csv
-    - graph_vul/pipeline/extract_subset.py
-    - graph_vul/config.py
-    outs:
-    - data/subset.csv
-    - data/subset_manifest.json
-    - data/subset_report.md
+  # extract_subset:
+  #   cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv 
+  #     --output data/subset.csv --manifest data/subset_manifest.json --report 
+  #     data/subset_report.md
+  #   deps:
+  #   - data/bigvul.csv
+  #   - graph_vul/pipeline/extract_subset.py
+  #   - graph_vul/config.py
+  #   outs:
+  #   - data/subset.csv
+  #   - data/subset_manifest.json
+  #   - data/subset_report.md
 
   # joern_export:
   #   cmd: python -m graph_vul.pipeline.joern_export --input data/subset.csv --output data/raw
@@ -47,14 +47,14 @@ stages:
     outs:
     - data/processed/cwe_embeddings
 
-  split_data:
-    cmd: python -m graph_vul.pipeline.split_data --input data/subset.csv 
-      --output data/splits --seed 42
-    deps:
-    - data/subset.csv
-    - graph_vul/pipeline/split_data.py
-    outs:
-    - data/splits
+  # split_data:
+  #   cmd: python -m graph_vul.pipeline.split_data --input data/subset.csv 
+  #     --output data/splits --seed 42
+  #   deps:
+  #   - data/subset.csv
+  #   - graph_vul/pipeline/split_data.py
+  #   outs:
+  #   - data/splits
 
   # train:
   #   cmd: python -m graph_vul.train --epochs 35 --batch-size 32 --lr 1e-5 --seed 42
@@ -82,14 +82,14 @@ stages:
     - data/func_subset_manifest.json
     - data/func_subset_report.md
 
-  func_embed:
-    cmd: python -m graph_vul.pipeline.embed_functions
-    deps:
-    - data/func_subset.csv
-    - graph_vul/pipeline/embed_functions.py
-    - graph_vul/pipeline/embed_utils.py
-    outs:
-    - data/processed/func_embeddings
+  # func_embed:
+  #   cmd: python -m graph_vul.pipeline.embed_functions
+  #   deps:
+  #   - data/func_subset.csv
+  #   - graph_vul/pipeline/embed_functions.py
+  #   - graph_vul/pipeline/embed_utils.py
+  #   outs:
+  #   - data/processed/func_embeddings
 
   func_split:
     cmd: python -m graph_vul.pipeline.split_data --input data/func_subset.csv 

@@ -5,12 +5,14 @@ from itertools import combinations
 import pandas as pd
 import pytest
 
+import graph_vul.pipeline.split_data as split_module
 from graph_vul.pipeline.split_data import (
     ALL_SPLITS,
     _assign_splits,
     _assign_unseen_splits,
     _build_unseen_pool,
     _compute_sample_weights,
+    _enforce_min_split_sizes,
     _validate_heldout_eligibility,
     _validate_splits,
     split_data,
@@ -130,6 +132,45 @@ class TestAssignSplits:
         a2 = _assign_splits(df_seen, seed=42)
         pd.testing.assert_frame_equal(a1, a2)
 
+    def test_targets_row_counts_on_skewed_projects(self):
+        rows = []
+        project_sizes = {
+            "P1": 400,
+            "P2": 260,
+            "P3": 140,
+            "P4": 120,
+            "P5": 80,
+            "P6": 70,
+            "P7": 50,
+            "P8": 40,
+            "P9": 30,
+            "P10": 20,
+        }
+        sample_id = 0
+        for project, size in project_sizes.items():
+            vul_rows = max(round(size * 0.2), 1)
+            for i in range(size):
+                rows.append({
+                    "sample_id": sample_id,
+                    "project": project,
+                    "cwe_id": "CWE-119" if i % 2 == 0 else "CWE-125",
+                    "func_before": f"{project}-{i}",
+                    "vul": 1 if i < vul_rows else 0,
+                })
+                sample_id += 1
+
+        df = pd.DataFrame(rows)
+        assignments = _assign_splits(df, seed=42)
+        merged = df.merge(assignments, on="sample_id")
+        split_sizes = merged["split"].value_counts().to_dict()
+        total = len(merged)
+
+        assert abs(split_sizes["train"] - round(total * 0.8)) <= 160
+        assert abs(split_sizes["val"] - round(total * 0.1)) <= 60
+        assert abs(split_sizes["test"] - round(total * 0.1)) <= 60
+        assert split_sizes["val"] >= 70
+        assert split_sizes["test"] >= 70
+
 
 class TestAssignUnseenSplits:
     def test_unseen_split_project_disjoint(self, multi_cwe_subset_df):
@@ -146,6 +187,28 @@ class TestAssignUnseenSplits:
         assignments = _assign_unseen_splits(df_unseen, seed=42)
         assert len(assignments) == len(df_unseen)
         assert set(assignments["split"].unique()) <= {"unseen_val", "unseen_test"}
+
+    def test_unseen_targets_row_counts_on_skewed_projects(self):
+        rows = []
+        project_sizes = {"U1": 300, "U2": 180, "U3": 90, "U4": 70, "U5": 60}
+        sample_id = 0
+        for project, size in project_sizes.items():
+            for i in range(size):
+                rows.append({
+                    "sample_id": sample_id,
+                    "project": project,
+                    "cwe_id": "CWE-200" if i % 3 == 0 else "CWE-416",
+                    "func_before": f"{project}-{i}",
+                    "vul": 1 if i % 5 == 0 else 0,
+                })
+                sample_id += 1
+
+        df_unseen = pd.DataFrame(rows)
+        assignments = _assign_unseen_splits(df_unseen, seed=42)
+        merged = df_unseen.merge(assignments, on="sample_id")
+        split_sizes = merged["split"].value_counts().to_dict()
+
+        assert abs(split_sizes["unseen_val"] - split_sizes["unseen_test"]) <= 130
 
 
 class TestValidateSplits:
@@ -190,6 +253,19 @@ class TestValidateSplits:
         )
         cwe_leak_warnings = [w for w in warnings if "HELD-OUT CWE LEAKAGE" in w]
         assert len(cwe_leak_warnings) >= 1
+
+    def test_enforces_min_split_sizes(self):
+        df = pd.DataFrame({
+            "sample_id": range(200),
+            "project": ["A"] * 150 + ["B"] * 30 + ["C"] * 20,
+            "vul": ([1] * 40 + [0] * 110) + ([1] * 5 + [0] * 25) + ([1] * 4 + [0] * 16),
+        })
+        assignments = pd.DataFrame({
+            "sample_id": range(200),
+            "split": (["train"] * 150) + (["val"] * 30) + (["test"] * 20),
+        })
+        with pytest.raises(ValueError, match="Split size validation failed"):
+            _enforce_min_split_sizes(df, assignments, min_rows=25, min_frac=0.15)
 
 
 class TestComputeSampleWeights:
@@ -354,3 +430,17 @@ class TestSplitDataEndToEnd:
         w1 = pd.read_csv(out1 / "train_sampler_weights.csv")
         w2 = pd.read_csv(out2 / "train_sampler_weights.csv")
         pd.testing.assert_frame_equal(w1, w2)
+
+    def test_fails_when_val_or_test_too_small(self, multi_cwe_subset_df, tmp_path, monkeypatch):
+        input_csv = tmp_path / "subset.csv"
+        multi_cwe_subset_df.to_csv(input_csv, index=False)
+
+        monkeypatch.setattr(split_module, "MIN_SPLIT_ROWS", 99999)
+        monkeypatch.setattr(split_module, "MIN_SPLIT_FRAC", 0.0)
+
+        with pytest.raises(ValueError, match="Split size validation failed"):
+            split_data(
+                input_csv=str(input_csv),
+                output_dir=str(tmp_path / "splits"),
+                seed=42,
+            )
