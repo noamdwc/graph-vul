@@ -11,14 +11,19 @@ provide enough data for robust training and evaluation.
 
 ## Pipeline Filter Criteria
 
-The function-level pipeline (`func_extract_subset.py`) applies the following filters
-sequentially. Each candidate CWE is evaluated under the same chain:
+At the time of this analysis on 2026-03-26, the function-level pipeline
+(`func_extract_subset.py`) applied the following filters sequentially. Each
+candidate CWE was evaluated under the same historical chain:
 
 | Filter | Criterion |
 |--------|-----------|
 | Deduplication | Remove exact-match `func_before` duplicates (SHA-256) |
 | Token length | Drop functions with > 512 whitespace tokens |
 | Project size | Keep only projects contributing 50-2000 rows for the given CWE |
+
+The current subset-building policy is now split-agnostic and no longer removes
+small `(project, cwe_id)` groups at this stage. This document remains useful as
+historical selection analysis for the earlier curated-8-CWE experiment.
 
 ## Raw CWE Distribution (Top 30)
 

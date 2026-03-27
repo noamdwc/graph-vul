@@ -73,8 +73,7 @@ FUNC_EMBEDDINGS_DIR = PROCESSED_DIR / "func_embeddings"
 FUNC_SPLITS_DIR = DATA_DIR / "func_splits"
 FUNC_CHECKPOINT_PATH = DATA_DIR / "func_baseline_model.ckpt"
 
-# Function baseline sampling
-FUNC_MIN_PROJECT_ROWS = 50
+# Function baseline subset extraction
 FUNC_MAX_PROJECT_ROWS = 2000
 
 # Function baseline MLP
