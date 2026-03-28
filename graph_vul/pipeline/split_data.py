@@ -13,6 +13,7 @@ Produces:
 - train_sampler_weights.csv    (per-row weights for balanced training)
 - train_balanced_manifest.csv  (materialized balanced training set)
 - split_report.md              (diagnostics)
+- unseen_audit.csv             (per-project unseen split statistics)
 """
 
 import argparse
@@ -47,6 +48,11 @@ from graph_vul.config import (
 logger = logging.getLogger(__name__)
 
 ALL_SPLITS = ["train", "val", "test", "unseen_val", "unseen_test"]
+
+# Unseen split balance constants
+UNSEEN_PROJECT_COUNT_PENALTY = 20.0
+MIN_UNSEEN_PROJECTS = 8
+MIN_UNSEEN_VUL_ROWS = 10
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +189,7 @@ def _greedy_project_split(
     project_stats: pd.DataFrame,
     split_fracs: dict[str, float],
     seed: int,
+    project_count_targets: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """Assign projects to splits greedily, optimizing for row targets first."""
     splits = list(split_fracs.keys())
@@ -221,7 +228,19 @@ def _greedy_project_split(
                 state[split][col] += float(project[col])
         return state
 
-    def score_state(state: dict[str, dict[str, float]]) -> float:
+    def _project_count_score(project_to_split: dict[str, str]) -> float:
+        if not project_count_targets:
+            return 0.0
+        counts = {split: 0 for split in splits}
+        for split in project_to_split.values():
+            counts[split] += 1
+        penalty = 0.0
+        for split in splits:
+            target = max(project_count_targets.get(split, 1), 1)
+            penalty += ((counts[split] / target) - 1.0) ** 2
+        return UNSEEN_PROJECT_COUNT_PENALTY * penalty
+
+    def score_state(state: dict[str, dict[str, float]], project_to_split: dict[str, str] | None = None) -> float:
         total_score = 0.0
         for split in splits:
             new_rows = state[split]["rows"]
@@ -250,6 +269,10 @@ def _greedy_project_split(
                 bucket_penalty += gap ** 2
 
             total_score += 100.0 * row_penalty + 8.0 * vul_penalty + 3.0 * cwe_penalty + 1.0 * bucket_penalty
+
+        if project_to_split is not None:
+            total_score += _project_count_score(project_to_split)
+
         return total_score
 
     state = {split: values.copy() for split, values in base_state.items()}
@@ -315,6 +338,12 @@ def _greedy_project_split(
                 + 1.0 * bucket_penalty
                 + split_tie_noise[split][idx]
             )
+
+            if project_count_targets:
+                candidate_assignments = dict(project_to_split)
+                candidate_assignments[str(project["project"])] = split
+                score += _project_count_score(candidate_assignments)
+
             if best_score is None or score < best_score:
                 best_score = score
                 best_split = split
@@ -330,7 +359,7 @@ def _greedy_project_split(
 
     # Deterministic local refinement: move whole projects when it improves the global objective.
     project_sizes = project_stats.set_index("project")["total_rows"].to_dict()
-    current_score = score_state(build_state(project_to_split))
+    current_score = score_state(build_state(project_to_split), project_to_split)
     for _ in range(len(project_to_split) * max(len(splits), 1)):
         best_move = None
         best_score = current_score
@@ -344,7 +373,7 @@ def _greedy_project_split(
                     continue
                 candidate = dict(project_to_split)
                 candidate[project] = target_split
-                candidate_score = score_state(build_state(candidate))
+                candidate_score = score_state(build_state(candidate), candidate)
                 if candidate_score + 1e-9 < best_score:
                     best_score = candidate_score
                     best_move = (project, target_split)
@@ -406,10 +435,20 @@ def _assign_unseen_splits(
 
     major_cwes = _select_major_cwes(df_unseen)
     project_stats = _build_project_stats(df_unseen, major_cwes=major_cwes)
+
+    n_projects = len(project_stats)
+    target_unseen_val = max(1, round(n_projects * UNSEEN_VAL_FRAC))
+    target_unseen_test = n_projects - target_unseen_val
+    project_count_targets = {
+        "unseen_val": target_unseen_val,
+        "unseen_test": target_unseen_test,
+    }
+
     project_to_split = _greedy_project_split(
         project_stats,
         split_fracs={"unseen_val": UNSEEN_VAL_FRAC, "unseen_test": 1.0 - UNSEEN_VAL_FRAC},
         seed=seed,
+        project_count_targets=project_count_targets,
     )
     return _expand_project_assignments(df_unseen, project_to_split)
 
@@ -513,6 +552,45 @@ def _validate_splits(
         split_df = merged[merged["split"] == split_name]
         if len(split_df) > 0 and split_df["vul"].nunique() < 2:
             warnings.append(f"Split '{split_name}' has only one class (vul={split_df['vul'].iloc[0]})")
+
+    # Unseen split balance checks
+    total_unseen_projects = len(unseen_projects)
+    min_proj_threshold = MIN_UNSEEN_PROJECTS
+    if total_unseen_projects < 2 * MIN_UNSEEN_PROJECTS:
+        min_proj_threshold = max(1, total_unseen_projects // 2)
+        if total_unseen_projects > 0:
+            warnings.append(
+                f"Unseen pool has only {total_unseen_projects} projects — "
+                f"relaxing minimum project threshold to {min_proj_threshold}"
+            )
+
+    for split_name in ["unseen_val", "unseen_test"]:
+        split_df = merged[merged["split"] == split_name]
+        if len(split_df) == 0:
+            continue
+
+        n_proj = split_df["project"].nunique()
+        if n_proj < min_proj_threshold:
+            warnings.append(
+                f"UNSEEN PROJECT COUNT: '{split_name}' has only {n_proj} projects "
+                f"(minimum {min_proj_threshold})"
+            )
+
+        n_vul = int((split_df["vul"] == 1).sum())
+        if n_vul < MIN_UNSEEN_VUL_ROWS:
+            warnings.append(
+                f"UNSEEN VUL ROWS: '{split_name}' has only {n_vul} vulnerable rows "
+                f"(minimum {MIN_UNSEEN_VUL_ROWS})"
+            )
+
+        proj_sizes = split_df.groupby("project").size()
+        largest_proj = proj_sizes.idxmax()
+        largest_share = proj_sizes.max() / len(split_df)
+        if largest_share > 0.5:
+            warnings.append(
+                f"UNSEEN DOMINANCE: project '{largest_proj}' has {largest_share:.1%} of "
+                f"'{split_name}' rows"
+            )
 
     return warnings
 
@@ -747,6 +825,32 @@ def _generate_split_report(
             cwes = ", ".join(migration_info[proj])
             lines.append(f"| {proj} | {cwes} |")
 
+    # Unseen Split Balance
+    unseen_split_names = [s for s in ["unseen_val", "unseen_test"] if s in merged["split"].values]
+    if unseen_split_names:
+        lines.extend(["", "## Unseen Split Balance", ""])
+        for split_name in unseen_split_names:
+            split_df = merged[merged["split"] == split_name]
+            n_proj = split_df["project"].nunique()
+            n_rows = len(split_df)
+            n_vul = int((split_df["vul"] == 1).sum())
+            n_benign = n_rows - n_vul
+            proj_sizes = split_df.groupby("project").size()
+            largest_share = proj_sizes.max() / n_rows if n_rows else 0.0
+            lines.append(f"### {split_name}")
+            lines.append(f"- Projects: {n_proj}")
+            lines.append(f"- Total rows: {n_rows} ({n_vul} vul, {n_benign} benign)")
+            lines.append(f"- Largest-project share: {largest_share:.1%}")
+            lines.append("")
+            lines.append("| Project | Rows | Vulnerable | Benign |")
+            lines.append("|---------|------|------------|--------|")
+            for proj in sorted(split_df["project"].unique()):
+                proj_df = split_df[split_df["project"] == proj]
+                vul = int((proj_df["vul"] == 1).sum())
+                benign = len(proj_df) - vul
+                lines.append(f"| {proj} | {len(proj_df)} | {vul} | {benign} |")
+            lines.append("")
+
     # Val/test/unseen project details
     for split_name in ["val", "test", "unseen_val", "unseen_test"]:
         split_df = merged[merged["split"] == split_name]
@@ -926,6 +1030,37 @@ def split_data(
         manifest_path = out / "train_balanced_manifest.csv"
         manifest.to_csv(manifest_path, index=False)
         logger.info("Wrote balanced training manifest to %s", manifest_path)
+
+    # Generate unseen audit CSV
+    if len(df_unseen) > 0:
+        unseen_merged = df_unseen.merge(assignments, on="sample_id")
+        audit_rows = []
+        for split_name in ["unseen_val", "unseen_test"]:
+            split_df = unseen_merged[unseen_merged["split"] == split_name]
+            split_total = len(split_df)
+            split_vul_total = int((split_df["vul"] == 1).sum())
+            for proj, proj_df in split_df.groupby("project"):
+                total_rows = len(proj_df)
+                vul_rows = int((proj_df["vul"] == 1).sum())
+                benign_rows = total_rows - vul_rows
+                unique_cwes = proj_df["cwe_id"].nunique() if "cwe_id" in proj_df.columns else 0
+                row_share = total_rows / split_total if split_total else 0.0
+                vul_share = vul_rows / split_vul_total if split_vul_total else 0.0
+                audit_rows.append({
+                    "split": split_name,
+                    "project": proj,
+                    "total_rows": total_rows,
+                    "vulnerable_rows": vul_rows,
+                    "benign_rows": benign_rows,
+                    "unique_cwes": unique_cwes,
+                    "row_share_in_split": round(row_share, 4),
+                    "vul_share_in_split": round(vul_share, 4),
+                })
+        if audit_rows:
+            audit_df = pd.DataFrame(audit_rows)
+            audit_path = out / "unseen_audit.csv"
+            audit_df.to_csv(audit_path, index=False)
+            logger.info("Wrote unseen audit CSV to %s", audit_path)
 
     # Generate report
     report = _generate_split_report(df_all, assignments, warnings, migration_info, weights_df)

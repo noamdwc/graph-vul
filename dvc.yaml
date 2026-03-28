@@ -115,3 +115,17 @@ stages:
     metrics:
     - data/func_finetune_metrics.json:
         cache: false
+
+  func_export_predictions:
+    cmd: python -m graph_vul.export_finetune_predictions --checkpoint data/func_finetune_model.ckpt --output-dir data/analysis/func_finetune_predictions
+    deps:
+    - data/func_subset.csv
+    - data/processed/cwe_embeddings
+    - data/func_splits
+    - data/func_finetune_model.ckpt
+    - graph_vul/export_finetune_predictions.py
+    - graph_vul/dataset/func_finetune_dataset.py
+    - graph_vul/model/func_finetune_model.py
+    - graph_vul/model/func_finetune_lit_module.py
+    outs:
+    - data/analysis/func_finetune_predictions

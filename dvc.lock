@@ -227,14 +227,14 @@ stages:
       size: 64858657
     - path: graph_vul/pipeline/split_data.py
       hash: md5
-      md5: 486cc6add58aeef26e832b3b11f6ce88
-      size: 38477
+      md5: 10443f7cd1e5aa6ee271af88f07a701b
+      size: 44463
     outs:
     - path: data/func_splits
       hash: md5
-      md5: bc25ef6b2d945aa33eed95aab870fb01.dir
-      size: 3857766
-      nfiles: 4
+      md5: 0cd501f443319672ee1ef71df6da4703.dir
+      size: 3861672
+      nfiles: 5
   func_train:
     cmd: python -m graph_vul.train_baseline --epochs 50 --batch-size 64 --lr 
       1e-3
@@ -302,45 +302,89 @@ stages:
       size: 282225
       nfiles: 91
   func_finetune:
-    cmd: python -m graph_vul.train_finetune --epochs 10 --batch-size 8 
-      --encoder-lr 2e-5 --head-lr 1e-3 --grad-accum 8
+    cmd: python -m graph_vul.train_finetune
     deps:
     - path: data/func_splits
       hash: md5
-      md5: 6575319a73279fe453932e87848a20ce.dir
-      size: 97046
-      nfiles: 2
+      md5: bc25ef6b2d945aa33eed95aab870fb01.dir
+      size: 3857766
+      nfiles: 4
     - path: data/func_subset.csv
       hash: md5
-      md5: df192bbec8763ae34877214b90b101b6
-      size: 8027714
+      md5: 4f08bfe20f5c8e1ad79140990706f719
+      size: 64858657
     - path: data/processed/cwe_embeddings
       hash: md5
-      md5: 78e70671908c86d4e0049904e1946f86.dir
-      size: 3113
-      nfiles: 1
+      md5: 846ea68e28fdf68ed75e61545119eb4b.dir
+      size: 282225
+      nfiles: 91
     - path: graph_vul/dataset/func_finetune_dataset.py
       hash: md5
-      md5: ceefb18ccae3fded029cc8189c61459e
-      size: 2942
+      md5: 8a3ecbb0a56863b8eb2bcab499c74505
+      size: 3468
     - path: graph_vul/model/func_finetune_lit_module.py
       hash: md5
-      md5: deddb94889fe5d092a772fa64052f4aa
-      size: 5386
+      md5: 5b99675eb7b10afcd0784a1106ed3a63
+      size: 7001
     - path: graph_vul/model/func_finetune_model.py
       hash: md5
       md5: d7146ba5e10e26de47322a0982720c3b
       size: 1799
     - path: graph_vul/train_finetune.py
       hash: md5
-      md5: a99a341acb76f2d2cf59233cd37afbe8
-      size: 5464
+      md5: c0bb700f2708030754639bea2b387991
+      size: 6657
     outs:
     - path: data/func_finetune_metrics.json
       hash: md5
-      md5: 2af407df2d375592ae07f2a2dd77fcfc
-      size: 329
+      md5: 128668b7435fbb57623d7f03e567da79
+      size: 177
     - path: data/func_finetune_model.ckpt
       hash: md5
-      md5: 97d3365b5382c2ddfa5e90b7a6a5475a
-      size: 1509044913
+      md5: 12174a16dae330f8bac94bb47d880175
+      size: 1509053745
+  func_export_predictions:
+    cmd: python -m graph_vul.export_finetune_predictions --checkpoint 
+      data/func_finetune_model.ckpt --output-dir 
+      data/analysis/func_finetune_predictions
+    deps:
+    - path: data/func_finetune_model.ckpt
+      hash: md5
+      md5: 12174a16dae330f8bac94bb47d880175
+      size: 1509053745
+    - path: data/func_splits
+      hash: md5
+      md5: bc25ef6b2d945aa33eed95aab870fb01.dir
+      size: 3857766
+      nfiles: 4
+    - path: data/func_subset.csv
+      hash: md5
+      md5: 4f08bfe20f5c8e1ad79140990706f719
+      size: 64858657
+    - path: data/processed/cwe_embeddings
+      hash: md5
+      md5: 846ea68e28fdf68ed75e61545119eb4b.dir
+      size: 282225
+      nfiles: 91
+    - path: graph_vul/dataset/func_finetune_dataset.py
+      hash: md5
+      md5: 8a3ecbb0a56863b8eb2bcab499c74505
+      size: 3468
+    - path: graph_vul/export_finetune_predictions.py
+      hash: md5
+      md5: 51574f40b2adf095e060b69536672953
+      size: 7800
+    - path: graph_vul/model/func_finetune_lit_module.py
+      hash: md5
+      md5: 5b99675eb7b10afcd0784a1106ed3a63
+      size: 7001
+    - path: graph_vul/model/func_finetune_model.py
+      hash: md5
+      md5: d7146ba5e10e26de47322a0982720c3b
+      size: 1799
+    outs:
+    - path: data/analysis/func_finetune_predictions
+      hash: md5
+      md5: 8a6b59f1431ff1cdd535a90f12446ff4.dir
+      size: 41584451
+      nfiles: 5

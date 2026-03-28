@@ -114,21 +114,15 @@ class FuncFinetuneLitModule(pl.LightningModule):
 
     def test_step(self, batch: dict, batch_idx: int) -> None:
         _, preds, labels = self._shared_step(batch)
+        prefix = getattr(self, "_current_test_prefix", "test")
         self.test_accuracy.update(preds, labels)
         self.test_precision.update(preds, labels)
         self.test_recall.update(preds, labels)
         self.test_f1.update(preds, labels)
-
-    def on_test_epoch_end(self) -> None:
-        prefix = getattr(self, "_current_test_prefix", "test")
-        self.log(f"{prefix}_accuracy", self.test_accuracy.compute())
-        self.log(f"{prefix}_precision", self.test_precision.compute())
-        self.log(f"{prefix}_recall", self.test_recall.compute())
-        self.log(f"{prefix}_f1", self.test_f1.compute())
-        self.test_accuracy.reset()
-        self.test_precision.reset()
-        self.test_recall.reset()
-        self.test_f1.reset()
+        self.log(f"{prefix}_accuracy", self.test_accuracy, on_step=False, on_epoch=True, add_dataloader_idx=False)
+        self.log(f"{prefix}_precision", self.test_precision, on_step=False, on_epoch=True, add_dataloader_idx=False)
+        self.log(f"{prefix}_recall", self.test_recall, on_step=False, on_epoch=True, add_dataloader_idx=False)
+        self.log(f"{prefix}_f1", self.test_f1, on_step=False, on_epoch=True, add_dataloader_idx=False)
 
     def configure_optimizers(self) -> dict:
         encoder_params = list(self.model.encoder.parameters())
