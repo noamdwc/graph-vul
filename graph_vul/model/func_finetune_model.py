@@ -3,6 +3,9 @@
 Unfreezes the UniXcoder encoder and trains it end-to-end with a classification
 head that fuses mean-pooled code representations with CWE description embeddings.
 Optionally fuses a graph embedding from FunctionGraphEncoder when graph_dim > 0.
+
+When ``fusion_layers`` is set, gated residual fusion injects the pooled graph
+embedding into selected encoder layers via learned gates.
 """
 
 import torch
@@ -19,6 +22,7 @@ from graph_vul.config import (
     GRAPH_NODE_EMBED_DIM,
     UNIXCODER_MODEL_NAME,
 )
+from graph_vul.model.gated_residual_fusion import GatedResidualFusion
 from graph_vul.model.graph_encoder import FunctionGraphEncoder
 
 
@@ -37,11 +41,14 @@ class FuncFinetuneModel(nn.Module):
         graph_node_embed_dim: int = GRAPH_NODE_EMBED_DIM,
         graph_hidden_dim: int = GRAPH_HIDDEN_DIM,
         graph_dropout: float = GRAPH_DROPOUT,
+        fusion_layers: list[int] | None = None,
+        final_graph_concat: bool = True,
     ) -> None:
         super().__init__()
         self.encoder = AutoModel.from_pretrained(model_name)
         encoder_dim = self.encoder.config.hidden_size  # 768
         self.graph_dim = graph_dim
+        self.final_graph_concat = final_graph_concat
 
         if graph_dim > 0:
             self.graph_encoder = FunctionGraphEncoder(
@@ -52,13 +59,53 @@ class FuncFinetuneModel(nn.Module):
                 dropout=graph_dropout,
             )
 
-        input_dim = encoder_dim + graph_dim + cwe_dim
+        # Internal fusion via gated residual on selected encoder layers
+        self.fusion_layers = fusion_layers
+        self._fusion_hooks: list[torch.utils.hooks.RemovableHook] = []
+        self._current_graph_emb: torch.Tensor | None = None
+
+        if fusion_layers and graph_dim > 0:
+            self.fusion_modules = nn.ModuleDict(
+                {str(i): GatedResidualFusion(graph_dim, encoder_dim) for i in fusion_layers}
+            )
+            self._register_fusion_hooks()
+
+        # Late concat input dim
+        late_graph_dim = graph_dim if (graph_dim > 0 and final_graph_concat) else 0
+        input_dim = encoder_dim + late_graph_dim + cwe_dim
         self.head = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
+
+    def _register_fusion_hooks(self) -> None:
+        """Register forward hooks on selected encoder layers for fusion."""
+        for handle in self._fusion_hooks:
+            handle.remove()
+        self._fusion_hooks.clear()
+
+        encoder_layers = self.encoder.encoder.layer
+        for layer_idx in self.fusion_layers:
+            fusion_mod = self.fusion_modules[str(layer_idx)]
+
+            def make_hook(mod: GatedResidualFusion):
+                def hook_fn(layer_module, input, output):
+                    graph_emb = self._current_graph_emb
+                    if graph_emb is None:
+                        return output
+                    # RoBERTa layer output is a tuple (hidden_state, ...) or just hidden_state
+                    if isinstance(output, tuple):
+                        hidden_state = output[0]
+                        fused = mod(hidden_state, graph_emb)
+                        return (fused,) + output[1:]
+                    else:
+                        return mod(output, graph_emb)
+                return hook_fn
+
+            handle = encoder_layers[layer_idx].register_forward_hook(make_hook(fusion_mod))
+            self._fusion_hooks.append(handle)
 
     def forward(
         self,
@@ -67,14 +114,8 @@ class FuncFinetuneModel(nn.Module):
         cwe_embedding: torch.Tensor,
         graph_batch: Batch | None = None,
     ) -> torch.Tensor:
-        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        hidden = outputs.last_hidden_state  # [B, seq_len, 768]
-        # Mean pool over non-padding tokens
-        mask = attention_mask.unsqueeze(-1).float()  # [B, seq_len, 1]
-        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)  # [B, 768]
-
-        parts = [pooled]
-
+        # Compute graph embedding early so fusion hooks can access it
+        graph_emb: torch.Tensor | None = None
         if self.graph_dim > 0 and graph_batch is not None:
             graph_emb = self.graph_encoder(
                 graph_batch.node_type_ids,
@@ -83,6 +124,29 @@ class FuncFinetuneModel(nn.Module):
                 graph_batch.batch,
                 num_graphs=graph_batch.num_graphs,
             )
+
+        # Store for fusion hooks (zero vector if no graph data)
+        if self.fusion_layers and self.graph_dim > 0:
+            if graph_emb is not None:
+                self._current_graph_emb = graph_emb
+            else:
+                self._current_graph_emb = torch.zeros(
+                    input_ids.shape[0], self.graph_dim, device=input_ids.device
+                )
+
+        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        hidden = outputs.last_hidden_state  # [B, seq_len, 768]
+
+        # Clear hook state
+        self._current_graph_emb = None
+
+        # Mean pool over non-padding tokens
+        mask = attention_mask.unsqueeze(-1).float()  # [B, seq_len, 1]
+        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)  # [B, 768]
+
+        parts = [pooled]
+
+        if self.graph_dim > 0 and self.final_graph_concat and graph_emb is not None:
             parts.append(graph_emb)
 
         parts.append(cwe_embedding)

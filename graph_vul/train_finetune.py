@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+from pathlib import Path
 
 import pandas as pd
 import pytorch_lightning as pl
@@ -53,7 +54,17 @@ def train(
     grad_accum: int = FINETUNE_GRAD_ACCUM_STEPS,
     seed: int = SEED,
     use_graph: bool = False,
+    fusion_layers: list[int] | None = None,
+    final_graph_concat: bool = True,
+    checkpoint_path: Path | None = None,
+    metrics_path: Path | None = None,
+    run_tag: str | None = None,
 ) -> None:
+    if checkpoint_path is None:
+        checkpoint_path = CHECKPOINT_PATH
+    if metrics_path is None:
+        metrics_path = METRICS_PATH
+
     pl.seed_everything(seed)
 
     # Graph config
@@ -129,10 +140,13 @@ def train(
         graph_dim=graph_dim,
         num_node_types=num_node_types,
         num_relations=num_relations,
+        fusion_layers=fusion_layers,
+        final_graph_concat=final_graph_concat,
     )
 
     # Logger
-    run_name = "func-graph-finetune" if use_graph else "func-finetune"
+    default_run_name = "func-graph-finetune" if use_graph else "func-finetune"
+    run_name = run_tag or default_run_name
     model_name = "func-graph-finetune-unixcoder-rgcn" if use_graph else "func-finetune-unixcoder"
     wandb_logger = WandbLogger(
         project="graph-vul",
@@ -146,14 +160,17 @@ def train(
             "grad_accum": grad_accum,
             "seed": seed,
             "use_graph": use_graph,
+            "fusion_layers": fusion_layers,
+            "final_graph_concat": final_graph_concat,
+            "run_tag": run_tag,
             **graph_stats,
         },
     )
 
     # Callbacks
     checkpoint_cb = ModelCheckpoint(
-        dirpath=str(CHECKPOINT_PATH.parent),
-        filename="func_finetune_model",
+        dirpath=str(checkpoint_path.parent),
+        filename=checkpoint_path.stem,
         monitor="val_f1",
         mode="max",
         save_top_k=1,
@@ -201,10 +218,10 @@ def train(
             if val is not None:
                 metrics[key] = float(val)
 
-    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(METRICS_PATH, "w") as f:
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
-    logger.info("Wrote metrics to %s", METRICS_PATH)
+    logger.info("Wrote metrics to %s", metrics_path)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,8 @@ class FuncFinetuneLitModule(pl.LightningModule):
         graph_dim: int = 0,
         num_node_types: int = 0,
         num_relations: int = 0,
+        fusion_layers: list[int] | None = None,
+        final_graph_concat: bool = True,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -40,6 +42,8 @@ class FuncFinetuneLitModule(pl.LightningModule):
             graph_dim=graph_dim,
             num_node_types=num_node_types,
             num_relations=num_relations,
+            fusion_layers=fusion_layers,
+            final_graph_concat=final_graph_concat,
         )
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
@@ -196,6 +200,11 @@ class FuncFinetuneLitModule(pl.LightningModule):
         if self.model.graph_dim > 0:
             graph_params = list(self.model.graph_encoder.parameters())
             param_groups.append({"params": graph_params, "lr": self.hparams.head_lr})
+
+        # Add fusion module params if present
+        if hasattr(self.model, "fusion_modules"):
+            fusion_params = list(self.model.fusion_modules.parameters())
+            param_groups.append({"params": fusion_params, "lr": self.hparams.head_lr})
 
         optimizer = torch.optim.AdamW(param_groups, weight_decay=self.hparams.weight_decay)
 
