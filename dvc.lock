@@ -345,22 +345,21 @@ stages:
       size: 1509053745
   func_export_predictions:
     cmd: python -m graph_vul.export_finetune_predictions --checkpoint 
-      data/func_finetune_model.ckpt --output-dir 
-      data/analysis/func_finetune_predictions
+      data/new_model.ckpt --output-dir data/analysis/func_finetune_predictions
     deps:
-    - path: data/func_finetune_model.ckpt
-      hash: md5
-      md5: 12174a16dae330f8bac94bb47d880175
-      size: 1509053745
     - path: data/func_splits
       hash: md5
-      md5: bc25ef6b2d945aa33eed95aab870fb01.dir
-      size: 3857766
-      nfiles: 4
+      md5: 0cd501f443319672ee1ef71df6da4703.dir
+      size: 3861672
+      nfiles: 5
     - path: data/func_subset.csv
       hash: md5
       md5: 4f08bfe20f5c8e1ad79140990706f719
       size: 64858657
+    - path: data/new_model.ckpt
+      hash: md5
+      md5: 1176d337e32cc6d8df9c33a6aecd1f22
+      size: 1509053745
     - path: data/processed/cwe_embeddings
       hash: md5
       md5: 846ea68e28fdf68ed75e61545119eb4b.dir
@@ -385,6 +384,24 @@ stages:
     outs:
     - path: data/analysis/func_finetune_predictions
       hash: md5
-      md5: 8a6b59f1431ff1cdd535a90f12446ff4.dir
-      size: 41584451
+      md5: 211c5b5cf301759e175354e4910c2838.dir
+      size: 41573518
       nfiles: 5
+  post_experiment_analysis:
+    cmd: jupyter nbconvert --to pdf --execute --output-dir outputs 
+      notebooks/post_experiment_analysis.ipynb
+    deps:
+    - path: data/analysis/func_finetune_predictions
+      hash: md5
+      md5: 211c5b5cf301759e175354e4910c2838.dir
+      size: 41573518
+      nfiles: 5
+    - path: notebooks/post_experiment_analysis.ipynb
+      hash: md5
+      md5: 5c2a8ed629d50205614ccbbe8382316d
+      size: 288604
+    outs:
+    - path: outputs/post_experiment_analysis.pdf
+      hash: md5
+      md5: 7a4ec0e86265b25f3be309d76e8fe517
+      size: 605837

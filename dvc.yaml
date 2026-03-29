@@ -100,21 +100,21 @@ stages:
     outs:
     - data/func_splits
     
-  func_finetune:
-    cmd: python -m graph_vul.train_finetune
-    deps:
-    - data/func_subset.csv
-    - data/processed/cwe_embeddings
-    - data/func_splits
-    - graph_vul/train_finetune.py
-    - graph_vul/dataset/func_finetune_dataset.py
-    - graph_vul/model/func_finetune_model.py
-    - graph_vul/model/func_finetune_lit_module.py
-    outs:
-    - data/func_finetune_model.ckpt
-    metrics:
-    - data/func_finetune_metrics.json:
-        cache: false
+  # func_finetune:
+  #   cmd: python -m graph_vul.train_finetune
+  #   deps:
+  #   - data/func_subset.csv
+  #   - data/processed/cwe_embeddings
+  #   - data/func_splits
+  #   - graph_vul/train_finetune.py
+  #   - graph_vul/dataset/func_finetune_dataset.py
+  #   - graph_vul/model/func_finetune_model.py
+  #   - graph_vul/model/func_finetune_lit_module.py
+  #   outs:
+  #   - data/func_finetune_model.ckpt
+  #   metrics:
+  #   - data/func_finetune_metrics.json:
+  #       cache: false
 
   func_export_predictions:
     cmd: python -m graph_vul.export_finetune_predictions --checkpoint data/func_finetune_model.ckpt --output-dir data/analysis/func_finetune_predictions
@@ -122,10 +122,19 @@ stages:
     - data/func_subset.csv
     - data/processed/cwe_embeddings
     - data/func_splits
-    - data/func_finetune_model.ckpt
+    - data/new_model.ckpt
     - graph_vul/export_finetune_predictions.py
     - graph_vul/dataset/func_finetune_dataset.py
     - graph_vul/model/func_finetune_model.py
     - graph_vul/model/func_finetune_lit_module.py
     outs:
     - data/analysis/func_finetune_predictions
+
+  post_experiment_analysis:
+    cmd: jupyter nbconvert --to markdown --execute --output-dir outputs
+      notebooks/post_experiment_analysis.ipynb
+    deps:
+    - data/analysis/func_finetune_predictions
+    - notebooks/post_experiment_analysis.ipynb
+    outs:
+    - outputs/post_experiment_analysis.md

@@ -1,0 +1,6 @@
+- Test: accuracy=0.994, precision=0.905, recall=0.856, f1=0.880.
+- Unseen test: accuracy=0.987, precision=0.929, recall=0.845, f1=0.885.
+- Unseen F1 change vs test is +0.005 (small gap). Unseen precision change is +0.024; unseen recall change is -0.011. Generalization to unseen CWE looks stable at the aggregate level.
+- Weak CWEs by F1: CWE-399, CWE-476, CWE-125.
+- Weak projects by F1: u-boot, poppler, gpac.
+- Validation-based threshold tuning selected 0.70. Compare the tuned threshold against the default setting before changing production evaluation defaults.
