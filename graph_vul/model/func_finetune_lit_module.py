@@ -1,5 +1,7 @@
 """PyTorch Lightning module for UniXcoder fine-tuning."""
 
+import logging
+
 import pytorch_lightning as pl
 import torch
 import torchmetrics
@@ -13,6 +15,10 @@ from graph_vul.config import (
     WEIGHT_DECAY,
 )
 from graph_vul.model.func_finetune_model import FuncFinetuneModel
+
+logger = logging.getLogger(__name__)
+
+LOW_TOKEN_THRESHOLD = 64
 
 
 class FuncFinetuneLitModule(pl.LightningModule):
@@ -62,6 +68,8 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.test_recall = torchmetrics.classification.BinaryRecall()
         self.test_f1 = torchmetrics.classification.BinaryF1Score()
 
+        self._reset_low_token_tracking()
+
     def forward(self, input_ids, attention_mask, cwe_embedding, graph_batch=None):
         return self.model(input_ids, attention_mask, cwe_embedding, graph_batch=graph_batch)
 
@@ -84,6 +92,24 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.train_precision.update(preds, labels)
         self.train_recall.update(preds, labels)
         self.train_f1.update(preds, labels)
+
+        token_counts = batch["token_count"]
+        low_token_mask = token_counts < LOW_TOKEN_THRESHOLD
+        low_token_count = int(low_token_mask.sum().item())
+        batch_size = len(labels)
+        self._train_samples_seen += batch_size
+        self._train_low_token_seen += low_token_count
+        if low_token_count:
+            low_token_ids = batch["sample_id"][low_token_mask].detach().cpu().tolist()
+            self._train_low_token_sample_ids.update(int(sample_id) for sample_id in low_token_ids)
+        self.log("train_low_token_count", float(low_token_count), on_step=False, on_epoch=True, batch_size=batch_size)
+        self.log(
+            "train_low_token_frac",
+            low_token_count / max(batch_size, 1),
+            on_step=False,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
         return loss
 
     def on_train_epoch_end(self) -> None:
@@ -91,10 +117,34 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.log("train_precision", self.train_precision.compute())
         self.log("train_recall", self.train_recall.compute())
         self.log("train_f1", self.train_f1.compute())
+        self.log("train_low_token_seen", float(self._train_low_token_seen))
+        self.log(
+            "train_low_token_seen_frac",
+            self._train_low_token_seen / max(self._train_samples_seen, 1),
+        )
+        if self._train_low_token_sample_ids:
+            preview = ", ".join(str(sample_id) for sample_id in sorted(self._train_low_token_sample_ids)[:20])
+            logger.info(
+                "Epoch %d low-token train samples (<%d tokens): %d/%d seen, %d unique sample_ids. First ids: %s",
+                self.current_epoch,
+                LOW_TOKEN_THRESHOLD,
+                self._train_low_token_seen,
+                self._train_samples_seen,
+                len(self._train_low_token_sample_ids),
+                preview,
+            )
+        else:
+            logger.info(
+                "Epoch %d low-token train samples (<%d tokens): 0/%d seen",
+                self.current_epoch,
+                LOW_TOKEN_THRESHOLD,
+                self._train_samples_seen,
+            )
         self.train_accuracy.reset()
         self.train_precision.reset()
         self.train_recall.reset()
         self.train_f1.reset()
+        self._reset_low_token_tracking()
 
     def validation_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> None:
         _, preds, labels = self._shared_step(batch)
@@ -156,3 +206,8 @@ class FuncFinetuneLitModule(pl.LightningModule):
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr_lambda)
         return [optimizer], [scheduler]
+
+    def _reset_low_token_tracking(self) -> None:
+        self._train_samples_seen = 0
+        self._train_low_token_seen = 0
+        self._train_low_token_sample_ids: set[int] = set()

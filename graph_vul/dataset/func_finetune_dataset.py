@@ -114,6 +114,8 @@ class FuncFinetuneDataset(Dataset):
         item = {
             "input_ids": self.input_ids[idx],
             "attention_mask": self.attention_masks[idx],
+            "token_count": self.attention_masks[idx].sum(),
+            "sample_id": torch.tensor(int(self.sample_ids[idx]), dtype=torch.long),
             "cwe_embedding": self._get_cwe_embedding(str(self.cwe_ids[idx])),
             "label": torch.tensor(self.labels[idx], dtype=torch.float32),
         }

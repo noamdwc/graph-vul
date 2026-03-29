@@ -132,7 +132,7 @@ stages:
     - data/func_subset.csv
     - data/processed/cwe_embeddings
     - data/func_splits
-    - data/new_model.ckpt
+    - data/func_finetune_model.ckpt
     - graph_vul/export_finetune_predictions.py
     - graph_vul/dataset/func_finetune_dataset.py
     - graph_vul/model/func_finetune_model.py
@@ -141,10 +141,10 @@ stages:
     - data/analysis/func_finetune_predictions
 
   post_experiment_analysis:
-    cmd: jupyter nbconvert --to markdown --execute --output-dir outputs
+    cmd: jupyter nbconvert --to pdf --execute --output-dir outputs
       notebooks/post_experiment_analysis.ipynb
     deps:
     - data/analysis/func_finetune_predictions
     - notebooks/post_experiment_analysis.ipynb
     outs:
-    - outputs/post_experiment_analysis.md
+    - outputs/post_experiment_analysis.pdf
