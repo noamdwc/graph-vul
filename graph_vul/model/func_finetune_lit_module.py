@@ -24,10 +24,17 @@ class FuncFinetuneLitModule(pl.LightningModule):
         lr_scheduler_factor: float = LR_SCHEDULER_FACTOR,
         warmup_epochs: int = WARMUP_EPOCHS,
         min_lr: float = MIN_LR,
+        graph_dim: int = 0,
+        num_node_types: int = 0,
+        num_relations: int = 0,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.model = FuncFinetuneModel()
+        self.model = FuncFinetuneModel(
+            graph_dim=graph_dim,
+            num_node_types=num_node_types,
+            num_relations=num_relations,
+        )
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
         # Train metrics
@@ -55,14 +62,16 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.test_recall = torchmetrics.classification.BinaryRecall()
         self.test_f1 = torchmetrics.classification.BinaryF1Score()
 
-    def forward(self, input_ids, attention_mask, cwe_embedding):
-        return self.model(input_ids, attention_mask, cwe_embedding)
+    def forward(self, input_ids, attention_mask, cwe_embedding, graph_batch=None):
+        return self.model(input_ids, attention_mask, cwe_embedding, graph_batch=graph_batch)
 
     def _shared_step(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        graph_batch = batch.get("graph_data")
         logits = self.model(
             batch["input_ids"],
             batch["attention_mask"],
             batch["cwe_embedding"],
+            graph_batch=graph_batch,
         ).squeeze(-1)
         loss = self.criterion(logits, batch["label"])
         preds = (logits >= 0).long()
@@ -128,10 +137,17 @@ class FuncFinetuneLitModule(pl.LightningModule):
         encoder_params = list(self.model.encoder.parameters())
         head_params = list(self.model.head.parameters())
 
-        optimizer = torch.optim.AdamW([
+        param_groups = [
             {"params": encoder_params, "lr": self.hparams.encoder_lr},
             {"params": head_params, "lr": self.hparams.head_lr},
-        ], weight_decay=self.hparams.weight_decay)
+        ]
+
+        # Add graph encoder params to head LR group if present
+        if self.model.graph_dim > 0:
+            graph_params = list(self.model.graph_encoder.parameters())
+            param_groups.append({"params": graph_params, "lr": self.hparams.head_lr})
+
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=self.hparams.weight_decay)
 
         def get_lr_lambda(epoch: int) -> float:
             if epoch < self.hparams.warmup_epochs:

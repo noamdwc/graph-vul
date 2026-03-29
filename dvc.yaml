@@ -37,6 +37,16 @@ stages:
   #   outs:
   #     - data/processed/code_embeddings
 
+  extract_graphs:
+    cmd: python -m graph_vul.pipeline.extract_graphs
+    deps:
+      - data/raw
+      - data/func_subset.csv
+      - graph_vul/pipeline/extract_graphs.py
+      - graph_vul/config.py
+    outs:
+      - data/processed/graph_artifacts
+
   embed_cwe:
     cmd: python -m graph_vul.pipeline.embed_cwe --input 
       data/cwe_descriptions.json --output data/processed/cwe_embeddings

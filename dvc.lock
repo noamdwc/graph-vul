@@ -177,8 +177,8 @@ stages:
       size: 1541009577
     - path: graph_vul/config.py
       hash: md5
-      md5: 419ec7dc46b3d38cf96a11d4635764e5
-      size: 2771
+      md5: 53e603d2368962e7efe4f2ee25c0096a
+      size: 3095
     - path: graph_vul/pipeline/func_extract_subset.py
       hash: md5
       md5: c685795d3709decc02cd518619f7a24f
@@ -405,3 +405,29 @@ stages:
       hash: md5
       md5: 7a4ec0e86265b25f3be309d76e8fe517
       size: 605837
+  extract_graphs:
+    cmd: python -m graph_vul.pipeline.extract_graphs
+    deps:
+    - path: data/func_subset.csv
+      hash: md5
+      md5: 4f08bfe20f5c8e1ad79140990706f719
+      size: 64858657
+    - path: data/raw
+      hash: md5
+      md5: 92653f9ca5816b5df628528e1b7b084c.dir
+      size: 136100473
+      nfiles: 23847
+    - path: graph_vul/config.py
+      hash: md5
+      md5: 53e603d2368962e7efe4f2ee25c0096a
+      size: 3095
+    - path: graph_vul/pipeline/extract_graphs.py
+      hash: md5
+      md5: 98982de0804a2c72ddbe0f8c386f6b81
+      size: 13037
+    outs:
+    - path: data/processed/graph_artifacts
+      hash: md5
+      md5: 073a773617dc0ecd31e1720dd3979163.dir
+      size: 22915036
+      nfiles: 1735

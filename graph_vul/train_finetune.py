@@ -21,16 +21,28 @@ from graph_vul.config import (
     FINETUNE_NUM_EPOCHS,
     FUNC_SPLITS_DIR,
     FUNC_SUBSET_CSV,
+    GRAPH_EDGE_VOCAB_PATH,
+    GRAPH_HIDDEN_DIM,
+    GRAPH_NODE_VOCAB_PATH,
     SEED,
     UNIXCODER_MODEL_NAME,
 )
-from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset
+from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, finetune_graph_collate
 from graph_vul.model.func_finetune_lit_module import FuncFinetuneLitModule
 
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_PATH = DATA_DIR / "func_finetune_model.ckpt"
 METRICS_PATH = DATA_DIR / "func_finetune_metrics.json"
+
+
+def _load_graph_vocab() -> tuple[int, int]:
+    """Load graph vocabs and return (num_node_types, num_relations)."""
+    with open(GRAPH_NODE_VOCAB_PATH) as f:
+        node_vocab = json.load(f)
+    with open(GRAPH_EDGE_VOCAB_PATH) as f:
+        edge_vocab = json.load(f)
+    return len(node_vocab), len(edge_vocab)
 
 
 def train(
@@ -40,27 +52,49 @@ def train(
     head_lr: float = FINETUNE_HEAD_LR,
     grad_accum: int = FINETUNE_GRAD_ACCUM_STEPS,
     seed: int = SEED,
+    use_graph: bool = False,
 ) -> None:
     pl.seed_everything(seed)
+
+    # Graph config
+    graph_dim = 0
+    num_node_types = 0
+    num_relations = 0
+    graph_stats: dict = {}
+
+    if use_graph:
+        num_node_types, num_relations = _load_graph_vocab()
+        graph_dim = GRAPH_HIDDEN_DIM
+        logger.info("Graph mode enabled: %d node types, %d edge types", num_node_types, num_relations)
+        graph_stats = {
+            "num_node_types": num_node_types,
+            "num_relations": num_relations,
+            "graph_hidden_dim": GRAPH_HIDDEN_DIM,
+        }
 
     # Shared tokenizer
     tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
 
     # Datasets
-    train_ds = FuncFinetuneDataset(split="train", tokenizer=tokenizer)
-    val_ds = FuncFinetuneDataset(split="val", tokenizer=tokenizer)
-    test_ds = FuncFinetuneDataset(split="test", tokenizer=tokenizer)
+    train_ds = FuncFinetuneDataset(split="train", tokenizer=tokenizer, use_graph=use_graph)
+    val_ds = FuncFinetuneDataset(split="val", tokenizer=tokenizer, use_graph=use_graph)
+    test_ds = FuncFinetuneDataset(split="test", tokenizer=tokenizer, use_graph=use_graph)
 
-    unseen_val_ds = FuncFinetuneDataset(split="unseen_val", tokenizer=tokenizer)
+    unseen_val_ds = FuncFinetuneDataset(split="unseen_val", tokenizer=tokenizer, use_graph=use_graph)
+
+    collate_fn = finetune_graph_collate if use_graph else None
 
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
+        collate_fn=collate_fn,
     )
     unseen_val_loader = DataLoader(
         unseen_val_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
+        collate_fn=collate_fn,
     )
     test_loader = DataLoader(
         test_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
+        collate_fn=collate_fn,
     )
 
     # Weighted resampling for class balance
@@ -76,6 +110,7 @@ def train(
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(train_ds), replacement=True)
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, sampler=sampler, num_workers=4, persistent_workers=True,
+        collate_fn=collate_fn,
     )
 
     logger.info(
@@ -88,20 +123,30 @@ def train(
     )
 
     # Model
-    model = FuncFinetuneLitModule(encoder_lr=encoder_lr, head_lr=head_lr)
+    model = FuncFinetuneLitModule(
+        encoder_lr=encoder_lr,
+        head_lr=head_lr,
+        graph_dim=graph_dim,
+        num_node_types=num_node_types,
+        num_relations=num_relations,
+    )
 
     # Logger
+    run_name = "func-graph-finetune" if use_graph else "func-finetune"
+    model_name = "func-graph-finetune-unixcoder-rgcn" if use_graph else "func-finetune-unixcoder"
     wandb_logger = WandbLogger(
         project="graph-vul",
-        name="func-finetune",
+        name=run_name,
         config={
-            "model": "func-finetune-unixcoder",
+            "model": model_name,
             "encoder_lr": encoder_lr,
             "head_lr": head_lr,
             "epochs": num_epochs,
             "batch_size": batch_size,
             "grad_accum": grad_accum,
             "seed": seed,
+            "use_graph": use_graph,
+            **graph_stats,
         },
     )
 
@@ -134,12 +179,13 @@ def train(
     # Test on unseen_test (unseen_val is already evaluated every epoch)
     unseen_splits = ["unseen_test"]
     for split_name in unseen_splits:
-        ds = FuncFinetuneDataset(split=split_name, tokenizer=tokenizer)
+        ds = FuncFinetuneDataset(split=split_name, tokenizer=tokenizer, use_graph=use_graph)
         if len(ds) == 0:
             logger.warning("Skipping %s: no samples found", split_name)
             continue
         loader = DataLoader(
             ds, batch_size=batch_size, shuffle=False, num_workers=4,
+            collate_fn=collate_fn,
         )
         model.set_test_prefix(split_name)
         trainer.test(model, dataloaders=loader, ckpt_path="best")
@@ -169,6 +215,7 @@ if __name__ == "__main__":
     parser.add_argument("--head-lr", type=float, default=FINETUNE_HEAD_LR)
     parser.add_argument("--grad-accum", type=int, default=FINETUNE_GRAD_ACCUM_STEPS)
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--use-graph", action="store_true", help="Enable graph (AST+CFG RGCN) features")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -179,4 +226,5 @@ if __name__ == "__main__":
         head_lr=args.head_lr,
         grad_accum=args.grad_accum,
         seed=args.seed,
+        use_graph=args.use_graph,
     )

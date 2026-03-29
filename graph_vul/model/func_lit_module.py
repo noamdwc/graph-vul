@@ -23,10 +23,17 @@ class FuncLitModule(pl.LightningModule):
         warmup_epochs: int = WARMUP_EPOCHS,
         min_lr: float = MIN_LR,
         pos_weight: float | None = None,
+        graph_dim: int = 0,
+        num_node_types: int = 0,
+        num_relations: int = 0,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.model = FuncBaselineModel()
+        self.model = FuncBaselineModel(
+            graph_dim=graph_dim,
+            num_node_types=num_node_types,
+            num_relations=num_relations,
+        )
         pw = torch.tensor([pos_weight]) if pos_weight is not None else None
         self.criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pw)
 
@@ -48,17 +55,21 @@ class FuncLitModule(pl.LightningModule):
         self.test_recall = torchmetrics.classification.BinaryRecall()
         self.test_f1 = torchmetrics.classification.BinaryF1Score()
 
-    def forward(self, code_emb: torch.Tensor, cwe_emb: torch.Tensor) -> torch.Tensor:
-        return self.model(code_emb, cwe_emb)
+    def forward(self, code_emb: torch.Tensor, cwe_emb: torch.Tensor, graph_batch=None) -> torch.Tensor:
+        return self.model(code_emb, cwe_emb, graph_batch=graph_batch)
 
-    def _shared_step(self, batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        code_emb, cwe_emb, labels = batch
-        logits = self.model(code_emb, cwe_emb).squeeze(-1)  # [N]
+    def _shared_step(self, batch: tuple) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if len(batch) == 4:
+            code_emb, cwe_emb, graph_batch, labels = batch
+        else:
+            code_emb, cwe_emb, labels = batch
+            graph_batch = None
+        logits = self.model(code_emb, cwe_emb, graph_batch=graph_batch).squeeze(-1)  # [N]
         loss = self.criterion(logits, labels)
         preds = (logits >= 0).long()
         return loss, preds, labels.long()
 
-    def training_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         loss, preds, labels = self._shared_step(batch)
         self.log("train_loss", loss.detach(), prog_bar=True, batch_size=len(labels))
         self.train_accuracy.update(preds, labels)
@@ -77,7 +88,7 @@ class FuncLitModule(pl.LightningModule):
         self.train_recall.reset()
         self.train_f1.reset()
 
-    def validation_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
+    def validation_step(self, batch: tuple, batch_idx: int) -> None:
         _, preds, labels = self._shared_step(batch)
         self.val_accuracy.update(preds, labels)
         self.val_precision.update(preds, labels)
@@ -94,7 +105,7 @@ class FuncLitModule(pl.LightningModule):
         self.val_recall.reset()
         self.val_f1.reset()
 
-    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
+    def test_step(self, batch: tuple, batch_idx: int) -> None:
         _, preds, labels = self._shared_step(batch)
         self.test_accuracy.update(preds, labels)
         self.test_precision.update(preds, labels)
