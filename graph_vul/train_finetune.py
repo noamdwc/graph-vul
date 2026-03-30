@@ -54,7 +54,7 @@ def train(
     grad_accum: int = FINETUNE_GRAD_ACCUM_STEPS,
     seed: int = SEED,
     use_graph: bool = False,
-    fusion_layers: list[int] | None = None,
+    fusion_layers: list[int] | None = list(range(12)),
     final_graph_concat: bool = True,
     checkpoint_path: Path | None = None,
     metrics_path: Path | None = None,
