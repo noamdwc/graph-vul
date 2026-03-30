@@ -26,7 +26,7 @@ from graph_vul.config import (
     HELDOUT_CWE_IDS,
     UNIXCODER_MODEL_NAME,
 )
-from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset
+from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, finetune_graph_collate
 from graph_vul.model.func_finetune_lit_module import FuncFinetuneLitModule
 
 logger = logging.getLogger(__name__)
@@ -82,11 +82,13 @@ def export_split_predictions(
         logger.warning("Skipping %s: no rows in metadata", split)
         return None
 
+    use_graph = model.model.graph_dim > 0
     dataset = FuncFinetuneDataset(
         split=split,
         tokenizer=tokenizer,
         subset_csv=subset_csv,
         splits_dir=splits_dir,
+        use_graph=use_graph,
     )
     if len(dataset) != len(metadata_df):
         raise ValueError(f"Metadata/dataset length mismatch for {split}: {len(metadata_df)} vs {len(dataset)}")
@@ -97,6 +99,7 @@ def export_split_predictions(
         shuffle=False,
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
+        collate_fn=finetune_graph_collate if use_graph else None,
     )
 
     logits_parts: list[torch.Tensor] = []
@@ -113,8 +116,11 @@ def export_split_predictions(
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             cwe_embedding = batch["cwe_embedding"].to(device)
+            graph_batch = batch.get("graph_data")
+            if graph_batch is not None:
+                graph_batch = graph_batch.to(device)
 
-            logits = model(input_ids, attention_mask, cwe_embedding).squeeze(-1)
+            logits = model(input_ids, attention_mask, cwe_embedding, graph_batch=graph_batch).squeeze(-1)
             probs = torch.sigmoid(logits)
             preds = (probs >= threshold).long()
 
