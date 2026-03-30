@@ -14,7 +14,12 @@ wandb/
 # IDE
 .vscode/
 .idea/
+.codex/
 
 # Local environments and tool installs
 .venv/
 joern_install/
+
+# Local machine files
+.DS_Store
+.mcp.json
