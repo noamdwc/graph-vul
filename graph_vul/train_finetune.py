@@ -215,7 +215,7 @@ def train(
     metrics = {}
     all_prefixes = ["val", "unseen_val", "test", "train"] + unseen_splits
     for prefix in all_prefixes:
-        for metric in ("accuracy", "precision", "recall", "f1"):
+        for metric in ("accuracy", "precision", "recall", "f1", "0_64_f1"):
             key = f"{prefix}_{metric}"
             val = trainer.callback_metrics.get(key, None)
             if val is not None:

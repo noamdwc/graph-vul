@@ -18,7 +18,7 @@ from graph_vul.model.func_finetune_model import FuncFinetuneModel
 
 logger = logging.getLogger(__name__)
 
-LOW_TOKEN_THRESHOLD = 64
+SHORT_FUNCTION_TOKEN_THRESHOLD = 64
 
 
 class FuncFinetuneLitModule(pl.LightningModule):
@@ -60,12 +60,14 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.val_precision = torchmetrics.classification.BinaryPrecision()
         self.val_recall = torchmetrics.classification.BinaryRecall()
         self.val_f1 = torchmetrics.classification.BinaryF1Score()
+        self.val_0_64_f1 = torchmetrics.classification.BinaryF1Score()
 
         # Unseen val metrics (logged every epoch alongside val)
         self.unseen_val_accuracy = torchmetrics.classification.BinaryAccuracy()
         self.unseen_val_precision = torchmetrics.classification.BinaryPrecision()
         self.unseen_val_recall = torchmetrics.classification.BinaryRecall()
         self.unseen_val_f1 = torchmetrics.classification.BinaryF1Score()
+        self.unseen_val_0_64_f1 = torchmetrics.classification.BinaryF1Score()
 
         # Test metrics (one set per test dataloader)
         self._test_prefixes: list[str] = ["test"]
@@ -73,6 +75,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.test_precision = torchmetrics.classification.BinaryPrecision()
         self.test_recall = torchmetrics.classification.BinaryRecall()
         self.test_f1 = torchmetrics.classification.BinaryF1Score()
+        self.test_0_64_f1 = torchmetrics.classification.BinaryF1Score()
 
         self._reset_low_token_tracking()
 
@@ -100,7 +103,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.train_f1.update(preds, labels)
 
         token_counts = batch["token_count"]
-        low_token_mask = token_counts < LOW_TOKEN_THRESHOLD
+        low_token_mask = token_counts <= SHORT_FUNCTION_TOKEN_THRESHOLD
         low_token_count = int(low_token_mask.sum().item())
         batch_size = len(labels)
         self._train_samples_seen += batch_size
@@ -131,9 +134,9 @@ class FuncFinetuneLitModule(pl.LightningModule):
         if self._train_low_token_sample_ids:
             preview = ", ".join(str(sample_id) for sample_id in sorted(self._train_low_token_sample_ids)[:20])
             logger.info(
-                "Epoch %d low-token train samples (<%d tokens): %d/%d seen, %d unique sample_ids. First ids: %s",
+                "Epoch %d low-token train samples (<=%d tokens): %d/%d seen, %d unique sample_ids. First ids: %s",
                 self.current_epoch,
-                LOW_TOKEN_THRESHOLD,
+                SHORT_FUNCTION_TOKEN_THRESHOLD,
                 self._train_low_token_seen,
                 self._train_samples_seen,
                 len(self._train_low_token_sample_ids),
@@ -141,9 +144,9 @@ class FuncFinetuneLitModule(pl.LightningModule):
             )
         else:
             logger.info(
-                "Epoch %d low-token train samples (<%d tokens): 0/%d seen",
+                "Epoch %d low-token train samples (<=%d tokens): 0/%d seen",
                 self.current_epoch,
-                LOW_TOKEN_THRESHOLD,
+                SHORT_FUNCTION_TOKEN_THRESHOLD,
                 self._train_samples_seen,
             )
         self.train_accuracy.reset()
@@ -154,11 +157,15 @@ class FuncFinetuneLitModule(pl.LightningModule):
 
     def validation_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> None:
         _, preds, labels = self._shared_step(batch)
+        short_f1_metric = None
+        short_f1_name = None
         if dataloader_idx == 0:
             self.val_accuracy.update(preds, labels)
             self.val_precision.update(preds, labels)
             self.val_recall.update(preds, labels)
             self.val_f1.update(preds, labels)
+            short_f1_metric = self.val_0_64_f1
+            short_f1_name = "val_0_64_f1"
             self.log("val_accuracy", self.val_accuracy, on_step=False, on_epoch=True, prog_bar=True, add_dataloader_idx=False)
             self.log("val_precision", self.val_precision, on_step=False, on_epoch=True, add_dataloader_idx=False)
             self.log("val_recall", self.val_recall, on_step=False, on_epoch=True, add_dataloader_idx=False)
@@ -168,10 +175,13 @@ class FuncFinetuneLitModule(pl.LightningModule):
             self.unseen_val_precision.update(preds, labels)
             self.unseen_val_recall.update(preds, labels)
             self.unseen_val_f1.update(preds, labels)
+            short_f1_metric = self.unseen_val_0_64_f1
+            short_f1_name = "unseen_val_0_64_f1"
             self.log("unseen_val_accuracy", self.unseen_val_accuracy, on_step=False, on_epoch=True, prog_bar=False, add_dataloader_idx=False)
             self.log("unseen_val_precision", self.unseen_val_precision, on_step=False, on_epoch=True, add_dataloader_idx=False)
             self.log("unseen_val_recall", self.unseen_val_recall, on_step=False, on_epoch=True, add_dataloader_idx=False)
             self.log("unseen_val_f1", self.unseen_val_f1, on_step=False, on_epoch=True, prog_bar=False, add_dataloader_idx=False)
+        self._log_short_function_f1(batch["token_count"], preds, labels, short_f1_metric, short_f1_name)
 
     def set_test_prefix(self, prefix: str) -> None:
         """Set the metric prefix for the current test run (e.g. 'test', 'unseen_val')."""
@@ -184,6 +194,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.test_precision.update(preds, labels)
         self.test_recall.update(preds, labels)
         self.test_f1.update(preds, labels)
+        self._log_short_function_f1(batch["token_count"], preds, labels, self.test_0_64_f1, f"{prefix}_0_64_f1")
         self.log(f"{prefix}_accuracy", self.test_accuracy, on_step=False, on_epoch=True, add_dataloader_idx=False)
         self.log(f"{prefix}_precision", self.test_precision, on_step=False, on_epoch=True, add_dataloader_idx=False)
         self.log(f"{prefix}_recall", self.test_recall, on_step=False, on_epoch=True, add_dataloader_idx=False)
@@ -222,3 +233,19 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self._train_samples_seen = 0
         self._train_low_token_seen = 0
         self._train_low_token_sample_ids: set[int] = set()
+
+    def _log_short_function_f1(
+        self,
+        token_counts: torch.Tensor,
+        preds: torch.Tensor,
+        labels: torch.Tensor,
+        metric: torchmetrics.classification.BinaryF1Score | None,
+        metric_name: str | None,
+    ) -> None:
+        if metric is None or metric_name is None:
+            return
+        short_mask = token_counts <= SHORT_FUNCTION_TOKEN_THRESHOLD
+        if not bool(short_mask.any()):
+            return
+        metric.update(preds[short_mask], labels[short_mask])
+        self.log(metric_name, metric, on_step=False, on_epoch=True, add_dataloader_idx=False)
