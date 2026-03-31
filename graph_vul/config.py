@@ -59,6 +59,17 @@ MIN_HELDOUT_PROJECTS = 2
 # Unseen split ratio
 UNSEEN_VAL_FRAC = 0.5
 
+# Fixed token-count bucket boundaries for evaluation
+TOKEN_BUCKET_EDGES = [0, 64, 128, 256, 512]
+TOKEN_BUCKET_LABELS = ["0-64", "64-128", "128-256", "256-512", "512+"]
+
+# Minimum short-function (0-64 token) counts for evaluation splits
+MIN_SHORT_VUL_PER_EVAL_SPLIT = 15
+MIN_SHORT_BENIGN_PER_EVAL_SPLIT = 30
+
+# Greedy allocator penalty weight for short-bucket deficit
+SHORT_BUCKET_DEFICIT_WEIGHT = 15.0
+
 # Train balancing
 BALANCE_TARGET_VUL_RATIO = 0.25
 BALANCE_CWE_SMOOTHING = 0.5

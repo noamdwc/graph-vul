@@ -34,13 +34,18 @@ from graph_vul.config import (
     MIN_HELDOUT_PROJECTS,
     MIN_HELDOUT_TOTAL_ROWS,
     MIN_HELDOUT_VUL_ROWS,
+    MIN_SHORT_BENIGN_PER_EVAL_SPLIT,
+    MIN_SHORT_VUL_PER_EVAL_SPLIT,
     MIN_SPLIT_FRAC,
     MIN_SPLIT_ROWS,
     SEED,
+    SHORT_BUCKET_DEFICIT_WEIGHT,
     SPLIT_MAJOR_CWE_TOP_K,
     SPLITS_DIR,
     SUBSET_CSV,
     TEST_SPLIT,
+    TOKEN_BUCKET_EDGES,
+    TOKEN_BUCKET_LABELS,
     UNSEEN_VAL_FRAC,
     VAL_SPLIT,
 )
@@ -182,6 +187,26 @@ def _build_project_stats(
             )
             agg[f"bucket::{bucket}"] = counts
 
+    # Short-bucket (0-64 token) vulnerable and benign counts per project
+    if "code_token_count_bucket" in df.columns and "vul" in df.columns:
+        short_mask = df["code_token_count_bucket"].astype(str) == "0-64"
+        short_vul = (
+            df[short_mask & (df["vul"] == 1)]
+            .groupby("project")
+            .size()
+            .reindex(agg["project"], fill_value=0)
+            .to_numpy()
+        )
+        short_benign = (
+            df[short_mask & (df["vul"] == 0)]
+            .groupby("project")
+            .size()
+            .reindex(agg["project"], fill_value=0)
+            .to_numpy()
+        )
+        agg["short_vul"] = short_vul
+        agg["short_benign"] = short_benign
+
     return agg
 
 
@@ -193,6 +218,8 @@ def _greedy_project_split(
 ) -> dict[str, str]:
     """Assign projects to splits greedily, optimizing for row targets first."""
     splits = list(split_fracs.keys())
+    eval_splits = [s for s in splits if s != "train"]
+    has_short = "short_vul" in project_stats.columns
     total_rows = float(project_stats["total_rows"].sum())
     total_vul = float(project_stats["vulnerable_rows"].sum())
     global_vul_ratio = total_vul / total_rows if total_rows else 0.0
@@ -200,6 +227,7 @@ def _greedy_project_split(
     bucket_cols = [col for col in project_stats.columns if col.startswith("bucket::")]
 
     tracked_cols = cwe_cols + bucket_cols
+    short_keys = ["short_vul", "short_benign"] if has_short else []
     split_targets = {
         split: {
             "rows": total_rows * frac,
@@ -209,13 +237,32 @@ def _greedy_project_split(
         for split, frac in split_fracs.items()
     }
     base_state = {
-        split: {"rows": 0.0, "vul_rows": 0.0, **{col: 0.0 for col in tracked_cols}}
+        split: {
+            "rows": 0.0, "vul_rows": 0.0,
+            **{col: 0.0 for col in tracked_cols},
+            **{k: 0.0 for k in short_keys},
+        }
         for split in splits
     }
 
+    def _short_deficit_penalty(state: dict[str, dict[str, float]]) -> float:
+        if not has_short:
+            return 0.0
+        penalty = 0.0
+        for s in eval_splits:
+            vul_deficit = max(0.0, MIN_SHORT_VUL_PER_EVAL_SPLIT - state[s]["short_vul"])
+            benign_deficit = max(0.0, MIN_SHORT_BENIGN_PER_EVAL_SPLIT - state[s]["short_benign"])
+            penalty += (vul_deficit / max(MIN_SHORT_VUL_PER_EVAL_SPLIT, 1)) ** 2
+            penalty += (benign_deficit / max(MIN_SHORT_BENIGN_PER_EVAL_SPLIT, 1)) ** 2
+        return SHORT_BUCKET_DEFICIT_WEIGHT * penalty
+
     def build_state(project_to_split: dict[str, str]) -> dict[str, dict[str, float]]:
         state = {
-            split: {"rows": 0.0, "vul_rows": 0.0, **{col: 0.0 for col in tracked_cols}}
+            split: {
+                "rows": 0.0, "vul_rows": 0.0,
+                **{col: 0.0 for col in tracked_cols},
+                **{k: 0.0 for k in short_keys},
+            }
             for split in splits
         }
         for _, project in project_stats.iterrows():
@@ -226,6 +273,8 @@ def _greedy_project_split(
             state[split]["vul_rows"] += float(project["vulnerable_rows"])
             for col in tracked_cols:
                 state[split][col] += float(project[col])
+            for k in short_keys:
+                state[split][k] += float(project[k])
         return state
 
     def _project_count_score(project_to_split: dict[str, str]) -> float:
@@ -269,6 +318,8 @@ def _greedy_project_split(
                 bucket_penalty += gap ** 2
 
             total_score += 100.0 * row_penalty + 8.0 * vul_penalty + 3.0 * cwe_penalty + 1.0 * bucket_penalty
+
+        total_score += _short_deficit_penalty(state)
 
         if project_to_split is not None:
             total_score += _project_count_score(project_to_split)
@@ -331,11 +382,23 @@ def _greedy_project_split(
                 gap = (state[split][col] + float(project[col]) - target) / target
                 bucket_penalty += gap ** 2
 
+            # Short-bucket deficit penalty (eval splits only)
+            short_penalty = 0.0
+            if has_short and split in eval_splits:
+                cand_sv = state[split]["short_vul"] + float(project["short_vul"])
+                cand_sb = state[split]["short_benign"] + float(project["short_benign"])
+                vul_def = max(0.0, MIN_SHORT_VUL_PER_EVAL_SPLIT - cand_sv)
+                ben_def = max(0.0, MIN_SHORT_BENIGN_PER_EVAL_SPLIT - cand_sb)
+                short_penalty += (vul_def / max(MIN_SHORT_VUL_PER_EVAL_SPLIT, 1)) ** 2
+                short_penalty += (ben_def / max(MIN_SHORT_BENIGN_PER_EVAL_SPLIT, 1)) ** 2
+                short_penalty *= SHORT_BUCKET_DEFICIT_WEIGHT
+
             score = (
                 100.0 * row_penalty
                 + 8.0 * vul_penalty
                 + 3.0 * cwe_penalty
                 + 1.0 * bucket_penalty
+                + short_penalty
                 + split_tie_noise[split][idx]
             )
 
@@ -356,6 +419,8 @@ def _greedy_project_split(
         state[best_split]["vul_rows"] += project_vul
         for col in tracked_cols:
             state[best_split][col] += float(project[col])
+        for k in short_keys:
+            state[best_split][k] += float(project[k])
 
     # Deterministic local refinement: move whole projects when it improves the global objective.
     project_sizes = project_stats.set_index("project")["total_rows"].to_dict()
@@ -590,6 +655,45 @@ def _validate_splits(
             warnings.append(
                 f"UNSEEN DOMINANCE: project '{largest_proj}' has {largest_share:.1%} of "
                 f"'{split_name}' rows"
+            )
+
+    return warnings
+
+
+def _validate_short_bucket_coverage(
+    df: pd.DataFrame,
+    assignments: pd.DataFrame,
+    min_short_vul: int = MIN_SHORT_VUL_PER_EVAL_SPLIT,
+    min_short_benign: int = MIN_SHORT_BENIGN_PER_EVAL_SPLIT,
+) -> list[str]:
+    """Check eval splits for short-bucket (0-64 token) coverage. Returns warnings."""
+    warnings: list[str] = []
+    if "code_token_count_bucket" not in df.columns or "vul" not in df.columns:
+        return warnings
+
+    merged = df.merge(assignments, on="sample_id")
+    eval_splits = [s for s in ALL_SPLITS if s != "train" and s in merged["split"].values]
+
+    for split_name in eval_splits:
+        split_df = merged[merged["split"] == split_name]
+        short_df = split_df[split_df["code_token_count_bucket"].astype(str) == "0-64"]
+        n_vul = int((short_df["vul"] == 1).sum())
+        n_benign = int((short_df["vul"] == 0).sum())
+
+        if n_vul < min_short_vul:
+            warnings.append(
+                f"SHORT-BUCKET VUL DEFICIT: '{split_name}' has {n_vul} short vulnerable "
+                f"rows (minimum {min_short_vul})"
+            )
+        if n_benign < min_short_benign:
+            warnings.append(
+                f"SHORT-BUCKET BENIGN DEFICIT: '{split_name}' has {n_benign} short benign "
+                f"rows (minimum {min_short_benign})"
+            )
+        if n_vul < 10:
+            warnings.append(
+                f"SHORT-BUCKET UNRELIABLE: '{split_name}' has only {n_vul} short vulnerable "
+                f"rows — too few for reliable short-function metrics"
             )
 
     return warnings
@@ -867,8 +971,8 @@ def _generate_split_report(
             else:
                 lines.append(f"- **{proj}** ({len(proj_df)} rows, {vul} vul, {benign} benign)")
 
-    # Metadata distributions
-    for col in ("code_char_len_bucket", "code_line_count_bucket", "code_token_count_bucket"):
+    # Metadata distributions (qcut-based char/line buckets)
+    for col in ("code_char_len_bucket", "code_line_count_bucket"):
         if col not in merged.columns:
             continue
         lines.extend(["", f"## {col} by Split", ""])
@@ -879,6 +983,53 @@ def _generate_split_report(
             if split_name in ct.index:
                 row_vals = " | ".join(str(ct.loc[split_name, c]) for c in ct.columns)
                 lines.append(f"| {split_name} | {row_vals} |")
+
+    # Token Length Buckets (fixed boundaries)
+    if "code_token_count_bucket" in merged.columns and "vul" in merged.columns:
+        lines.extend(["", "## Token Length Buckets", ""])
+        bucket_order = TOKEN_BUCKET_LABELS
+        lines.append("| Split | Bucket | Total | Vulnerable | Benign |")
+        lines.append("|-------|--------|-------|------------|--------|")
+        for split_name in ALL_SPLITS:
+            split_df = merged[merged["split"] == split_name]
+            if len(split_df) == 0:
+                continue
+            for bucket in bucket_order:
+                bdf = split_df[split_df["code_token_count_bucket"].astype(str) == bucket]
+                n_vul = int((bdf["vul"] == 1).sum())
+                n_benign = int((bdf["vul"] == 0).sum())
+                lines.append(f"| {split_name} | {bucket} | {len(bdf)} | {n_vul} | {n_benign} |")
+
+        # Short-Function Evaluation Viability
+        lines.extend(["", "## Short-Function Evaluation Viability", ""])
+        lines.append("| Split | Short Vul | Short Benign | Vul Status | Benign Status |")
+        lines.append("|-------|-----------|--------------|------------|---------------|")
+        eval_split_names = [s for s in ALL_SPLITS if s != "train" and s in merged["split"].values]
+        for split_name in eval_split_names:
+            split_df = merged[merged["split"] == split_name]
+            short_df = split_df[split_df["code_token_count_bucket"].astype(str) == "0-64"]
+            n_vul = int((short_df["vul"] == 1).sum())
+            n_benign = int((short_df["vul"] == 0).sum())
+            vul_status = "PASS" if n_vul >= MIN_SHORT_VUL_PER_EVAL_SPLIT else "WARN"
+            benign_status = "PASS" if n_benign >= MIN_SHORT_BENIGN_PER_EVAL_SPLIT else "WARN"
+            if n_vul < 10:
+                vul_status = "UNRELIABLE"
+            lines.append(f"| {split_name} | {n_vul} | {n_benign} | {vul_status} | {benign_status} |")
+
+        # Per-project short-bucket contributions in eval splits
+        lines.extend(["", "## Short-Bucket Project Contributions (Eval Splits)", ""])
+        lines.append("| Split | Project | Short Vul | Short Benign |")
+        lines.append("|-------|---------|-----------|--------------|")
+        for split_name in eval_split_names:
+            split_df = merged[merged["split"] == split_name]
+            short_df = split_df[split_df["code_token_count_bucket"].astype(str) == "0-64"]
+            if len(short_df) == 0:
+                continue
+            for proj in sorted(short_df["project"].unique()):
+                proj_short = short_df[short_df["project"] == proj]
+                sv = int((proj_short["vul"] == 1).sum())
+                sb = int((proj_short["vul"] == 0).sum())
+                lines.append(f"| {split_name} | {proj} | {sv} | {sb} |")
 
     # Train Balancing section
     if weights_df is not None and len(weights_df) > 0:
@@ -955,7 +1106,7 @@ def split_data(
     df["code_char_len"] = code.str.len()
     df["code_line_count"] = code.str.count("\n") + 1
     df["code_token_count"] = code.str.split().str.len().fillna(0).astype(int)
-    for col in ("code_char_len", "code_line_count", "code_token_count"):
+    for col in ("code_char_len", "code_line_count"):
         try:
             df[col + "_bucket"] = pd.qcut(
                 df[col], q=4, labels=["short", "medium", "long", "very_long"],
@@ -963,6 +1114,15 @@ def split_data(
             )
         except ValueError:
             df[col + "_bucket"] = "medium"
+
+    # Fixed token-count buckets (not data-dependent)
+    edges = TOKEN_BUCKET_EDGES + [np.inf]
+    df["code_token_count_bucket"] = pd.cut(
+        df["code_token_count"],
+        bins=edges,
+        labels=TOKEN_BUCKET_LABELS,
+        right=False,
+    ).astype(str)
 
     # Validate held-out CWE eligibility
     has_cwe = "cwe_id" in df.columns
@@ -1005,6 +1165,7 @@ def split_data(
         min_frac=MIN_SPLIT_FRAC,
     )
     warnings = _validate_splits(df_all, assignments, heldout_cwe_ids=HELDOUT_CWE_IDS if has_cwe else None)
+    warnings.extend(_validate_short_bucket_coverage(df_all, assignments))
     for w in warnings:
         logger.warning(w)
 
