@@ -22,7 +22,7 @@ from graph_vul.config import (
     GRAPH_NODE_EMBED_DIM,
     UNIXCODER_MODEL_NAME,
 )
-from graph_vul.model.gated_residual_fusion import GatedResidualFusion
+from graph_vul.model.gated_residual_fusion import FUSION_REGISTRY
 from graph_vul.model.graph_encoder import FunctionGraphEncoder
 
 
@@ -42,6 +42,7 @@ class FuncFinetuneModel(nn.Module):
         graph_hidden_dim: int = GRAPH_HIDDEN_DIM,
         graph_dropout: float = GRAPH_DROPOUT,
         fusion_layers: list[int] | None = None,
+        fusion_method: str = "scalar_gated_residual",
         final_graph_concat: bool = True,
     ) -> None:
         super().__init__()
@@ -65,8 +66,9 @@ class FuncFinetuneModel(nn.Module):
         self._current_graph_emb: torch.Tensor | None = None
 
         if fusion_layers and graph_dim > 0:
+            FusionClass = FUSION_REGISTRY[fusion_method]
             self.fusion_modules = nn.ModuleDict(
-                {str(i): GatedResidualFusion(graph_dim, encoder_dim) for i in fusion_layers}
+                {str(i): FusionClass(graph_dim, encoder_dim) for i in fusion_layers}
             )
             self._register_fusion_hooks()
 
@@ -90,7 +92,7 @@ class FuncFinetuneModel(nn.Module):
         for layer_idx in self.fusion_layers:
             fusion_mod = self.fusion_modules[str(layer_idx)]
 
-            def make_hook(mod: GatedResidualFusion):
+            def make_hook(mod: nn.Module):
                 def hook_fn(layer_module, input, output):
                     graph_emb = self._current_graph_emb
                     if graph_emb is None:

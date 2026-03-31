@@ -55,6 +55,7 @@ def train(
     seed: int = SEED,
     use_graph: bool = False,
     fusion_layers: list[int] | None = list(range(12)),
+    fusion_method: str = "scalar_gated_residual",
     final_graph_concat: bool = True,
     checkpoint_path: Path | None = None,
     metrics_path: Path | None = None,
@@ -141,6 +142,7 @@ def train(
         num_node_types=num_node_types,
         num_relations=num_relations,
         fusion_layers=fusion_layers,
+        fusion_method=fusion_method,
         final_graph_concat=final_graph_concat,
     )
 
@@ -161,6 +163,7 @@ def train(
             "seed": seed,
             "use_graph": use_graph,
             "fusion_layers": fusion_layers,
+            "fusion_method": fusion_method,
             "final_graph_concat": final_graph_concat,
             "run_tag": run_tag,
             **graph_stats,

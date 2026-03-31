@@ -36,3 +36,32 @@ class GatedResidualFusion(nn.Module):
         projected = self.proj(graph_emb).unsqueeze(1)  # [B, 1, hidden_size]
         gate_val = torch.sigmoid(self.gate(hidden_state))  # [B, seq_len, 1]
         return hidden_state + gate_val * projected
+
+
+class ScalarGatedResidualFusion(nn.Module):
+    """Fuse a pooled graph embedding into a transformer hidden state.
+
+    output = hidden_state + sigmoid(alpha) * proj(graph_emb).unsqueeze(1)
+
+    Alpha is a single learned scalar, initialized to -2.0
+    so fusion starts weak (~0.12) and must be learned.
+    """
+
+    def __init__(self, graph_dim: int, hidden_size: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(graph_dim, hidden_size)
+        self.alpha = nn.Parameter(torch.tensor(-2.0))
+
+    def forward(
+        self,
+        hidden_state: torch.Tensor,
+        graph_emb: torch.Tensor,
+    ) -> torch.Tensor:
+        projected = self.proj(graph_emb).unsqueeze(1)  # [B, 1, hidden_size]
+        return hidden_state + torch.sigmoid(self.alpha) * projected
+
+
+FUSION_REGISTRY: dict[str, type[nn.Module]] = {
+    "gated_residual": GatedResidualFusion,
+    "scalar_gated_residual": ScalarGatedResidualFusion,
+}

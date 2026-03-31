@@ -34,6 +34,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
         num_node_types: int = 0,
         num_relations: int = 0,
         fusion_layers: list[int] | None = None,
+        fusion_method: str = "scalar_gated_residual",
         final_graph_concat: bool = True,
     ) -> None:
         super().__init__()
@@ -43,6 +44,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
             num_node_types=num_node_types,
             num_relations=num_relations,
             fusion_layers=fusion_layers,
+            fusion_method=fusion_method,
             final_graph_concat=final_graph_concat,
         )
         self.criterion = torch.nn.BCEWithLogitsLoss()
