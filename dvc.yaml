@@ -140,6 +140,19 @@ stages:
     outs:
     - data/analysis/func_finetune_predictions
 
+  eval_external_tier1:
+    cmd: python -m graph_vul.eval_external
+    deps:
+    - data/func_finetune_model.ckpt
+    - data/processed/cwe_embeddings
+    - graph_vul/eval_external.py
+    - graph_vul/dataset/external_datasets.py
+    outs:
+    - data/analysis/external_eval_tier1
+    metrics:
+    - data/analysis/external_eval_tier1/metrics.json:
+        cache: false
+
   post_experiment_analysis:
     cmd: jupyter nbconvert --to pdf --execute --output-dir outputs
       notebooks/post_experiment_analysis.ipynb
