@@ -32,6 +32,10 @@ DEFAULT_DATASET_CANDIDATES = (
     Path("data/bigvul.csv"),
 )
 DEFAULT_OUTPUT_PATH = Path("data/cwe_descriptions.json")
+SPECIAL_CWE_DESCRIPTIONS = {
+    "NVD-CWE-Other": "Fallback label used by NVD when a vulnerability does not map cleanly to a more specific CWE entry.",
+    "NVD-CWE-noinfo": "Fallback label used by NVD when insufficient information is available to assign a specific CWE entry.",
+}
 TYPE_TO_ENDPOINT = {
     "category": "category",
     "view": "view",
@@ -66,11 +70,17 @@ def _load_dataset_cwes(dataset_path: Path) -> list[str]:
         if reader.fieldnames is None or "cwe_id" not in reader.fieldnames:
             raise ValueError(f"{dataset_path} does not contain a cwe_id column")
 
-        cwe_ids = {
-            normalized
-            for row in reader
-            if (normalized := _normalize_cwe_id(row.get("cwe_id", ""))) is not None
-        }
+        cwe_ids = set()
+        for row in reader:
+            raw_value = (row.get("cwe_id", "") or "").strip()
+            if not raw_value:
+                continue
+            normalized = _normalize_cwe_id(raw_value)
+            if normalized is not None:
+                cwe_ids.add(normalized)
+                continue
+            if raw_value in SPECIAL_CWE_DESCRIPTIONS:
+                cwe_ids.add(raw_value)
 
     return sorted(cwe_ids, key=_sort_key)
 
@@ -142,6 +152,13 @@ def fetch_cwe_description(cwe_id: str, timeout: float = 30.0, retries: int = 3) 
     raise RuntimeError(f"Failed to fetch {cwe_id}: {last_error}") from last_error
 
 
+def _fallback_description(cwe_id: str, reason: str | None = None) -> str:
+    if cwe_id in SPECIAL_CWE_DESCRIPTIONS:
+        return SPECIAL_CWE_DESCRIPTIONS[cwe_id]
+    suffix = f" MITRE API lookup failed: {reason}." if reason else ""
+    return f"Placeholder description for {cwe_id}. This CWE appeared in the dataset but an official MITRE description could not be fetched automatically.{suffix}"
+
+
 def _default_dataset_path() -> Path:
     for candidate in DEFAULT_DATASET_CANDIDATES:
         if candidate.exists():
@@ -157,9 +174,27 @@ def update_cwe_descriptions(
     retries: int = 3,
 ) -> dict[str, str]:
     cwe_ids = _load_dataset_cwes(dataset_path)
+    descriptions: dict[str, str] = {}
+    if output_path.exists():
+        with output_path.open() as handle:
+            existing = json.load(handle)
+        if isinstance(existing, dict):
+            descriptions.update({str(k): str(v) for k, v in existing.items() if str(v).strip()})
+
+    for cwe_id in cwe_ids:
+        if cwe_id in descriptions:
+            continue
+        if cwe_id in SPECIAL_CWE_DESCRIPTIONS:
+            descriptions[cwe_id] = SPECIAL_CWE_DESCRIPTIONS[cwe_id]
+            continue
+        try:
+            descriptions[cwe_id] = fetch_cwe_description(cwe_id, timeout=timeout, retries=retries)
+        except RuntimeError as exc:
+            descriptions[cwe_id] = _fallback_description(cwe_id, str(exc))
+
     descriptions = {
-        cwe_id: fetch_cwe_description(cwe_id, timeout=timeout, retries=retries)
-        for cwe_id in cwe_ids
+        cwe_id: descriptions[cwe_id]
+        for cwe_id in sorted(descriptions.keys(), key=_sort_key)
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

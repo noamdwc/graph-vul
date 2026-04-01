@@ -27,6 +27,32 @@ from graph_vul.config import (
 logger = logging.getLogger(__name__)
 
 
+def load_split_assignments(
+    split: str,
+    splits_dir: str | Path = FUNC_SPLITS_DIR,
+) -> pd.DataFrame:
+    splits_dir = Path(splits_dir)
+    assignments = pd.read_csv(splits_dir / "assignments.csv")
+    if split in {"unseen_val", "unseen_test"}:
+        derived_path = splits_dir / "unseen_assignments.csv"
+        if derived_path.exists():
+            derived = pd.read_csv(derived_path)
+            return derived[derived["split"] == split][["sample_id", "split"]].copy()
+    return assignments[assignments["split"] == split][["sample_id", "split"]].copy()
+
+
+def available_splits(splits_dir: str | Path = FUNC_SPLITS_DIR) -> list[str]:
+    assignments = pd.read_csv(Path(splits_dir) / "assignments.csv")
+    derived_path = Path(splits_dir) / "unseen_assignments.csv"
+    if derived_path.exists():
+        assignments = pd.concat([assignments, pd.read_csv(derived_path)], ignore_index=True)
+    ordered = []
+    for split_name in ["train", "val", "test", "unseen_val", "unseen_test"]:
+        if split_name in assignments["split"].values:
+            ordered.append(split_name)
+    return ordered
+
+
 class FuncFinetuneDataset(Dataset):
     """Tokenizes source code on-the-fly for end-to-end UniXcoder fine-tuning."""
 
@@ -55,8 +81,8 @@ class FuncFinetuneDataset(Dataset):
         subset = pd.read_csv(subset_csv, usecols=["sample_id", "func_before", "cwe_id", "vul"])
 
         # Filter to requested split
-        assignments = pd.read_csv(Path(splits_dir) / "assignments.csv")
-        split_ids = set(assignments[assignments["split"] == split]["sample_id"].values)
+        split_assignments = load_split_assignments(split=split, splits_dir=splits_dir)
+        split_ids = set(split_assignments["sample_id"].values)
         subset = subset[subset["sample_id"].isin(split_ids)].reset_index(drop=True)
 
         self.sample_ids = subset["sample_id"].values

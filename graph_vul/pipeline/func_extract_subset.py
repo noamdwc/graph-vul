@@ -1,23 +1,12 @@
-"""Extract a split-agnostic function-level subset from labeled BigVul rows.
-
-Keeps all labeled CWEs after applying:
-- Metadata derivation from `func_before`
-- Deduplication (exact code matches)
-- Token filter: drop functions with > FUNC_MAX_WHITESPACE_TOKENS tokens
-- Per-CWE project filter: drop only oversized (project, cwe_id) buckets
-- Output to data/func_subset.csv (separate from existing data/subset.csv)
-"""
+"""Extract a normalized PrimeVul-backed function subset for fine-tuning."""
 
 import hashlib
 import json
 import logging
-import zipfile
-from pathlib import Path
 
 import pandas as pd
 
 from graph_vul.config import (
-    BIGVUL_CSV,
     DEDUPLICATE_CODE,
     FUNC_MAX_PROJECT_ROWS,
     FUNC_MAX_WHITESPACE_TOKENS,
@@ -25,35 +14,11 @@ from graph_vul.config import (
     FUNC_SUBSET_MANIFEST,
     FUNC_SUBSET_REPORT,
     SEED,
+    TRAINING_DATASET_NAME,
 )
+from graph_vul.dataset.primevul_adapter import load_primevul_training_data
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# I/O helpers
-# ---------------------------------------------------------------------------
-
-def _read_bigvul_csv(path: str) -> pd.DataFrame:
-    src = Path(path)
-
-    if zipfile.is_zipfile(src):
-        logger.info("Detected ZIP-compressed Big-Vul dataset at %s", src)
-        df = pd.read_csv(src, compression="zip", low_memory=False)
-    else:
-        try:
-            df = pd.read_csv(src, low_memory=False)
-        except UnicodeDecodeError:
-            logger.warning("UTF-8 decode failed for %s; retrying with latin-1", src)
-            df = pd.read_csv(src, encoding="latin-1", low_memory=False)
-
-    return df.rename(
-        columns={
-            "CWE ID": "cwe_id",
-            "CVE ID": "cve_id",
-            "Summary": "cve_desc",
-        }
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +94,14 @@ def _deduplicate(df: pd.DataFrame) -> pd.DataFrame:
 
 def _filter_projects_per_cwe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Drop only oversized (project, cwe_id) groups."""
+    if "project" not in df.columns or "cwe_id" not in df.columns:
+        return df.copy(), {
+            "removed_group_count": 0,
+            "eligible_group_count": 0,
+            "total_group_count": 0,
+            "applied": False,
+        }
+
     pair_counts = df.groupby(["project", "cwe_id"]).size().reset_index(name="_count")
     eligible = pair_counts[pair_counts["_count"] <= FUNC_MAX_PROJECT_ROWS][["project", "cwe_id"]]
     removed_groups = pair_counts[pair_counts["_count"] > FUNC_MAX_PROJECT_ROWS]
@@ -143,6 +116,7 @@ def _filter_projects_per_cwe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         "removed_group_count": int(len(removed_groups)),
         "eligible_group_count": int(len(eligible)),
         "total_group_count": int(len(pair_counts)),
+        "applied": True,
     }
 
 
@@ -257,6 +231,7 @@ def _generate_report(manifest: dict) -> str:
         "",
         "## Configuration",
         "",
+        f"- Dataset: {cfg.get('dataset_name', 'N/A')}",
         f"- Subset scope: {cfg.get('subset_scope', 'N/A')}",
         f"- Max (project, cwe_id) rows: {cfg.get('max_project_rows', 'N/A')}",
         f"- Max whitespace tokens: {cfg.get('max_whitespace_tokens', 'N/A')}",
@@ -280,6 +255,7 @@ def _generate_report(manifest: dict) -> str:
         "",
         "## Project-CWE Filter",
         "",
+        f"- **Applied:** {project_filter.get('applied', False)}",
         f"- **Removed oversized (project, cwe_id) groups:** {project_filter.get('removed_group_count', 0)}",
         f"- **Eligible (project, cwe_id) groups:** {project_filter.get('eligible_group_count', 0)}",
         f"- **Total observed (project, cwe_id) groups:** {project_filter.get('total_group_count', 0)}",
@@ -365,19 +341,25 @@ def extract_func_subset(
     deduplicate: bool = DEDUPLICATE_CODE,
     seed: int = SEED,
 ) -> pd.DataFrame:
-    src = input_csv or str(BIGVUL_CSV)
     dst = output_csv or str(FUNC_SUBSET_CSV)
     manifest_path = output_manifest or str(FUNC_SUBSET_MANIFEST)
     report_path = output_report or str(FUNC_SUBSET_REPORT)
 
-    logger.info("Reading Big-Vul CSV from %s", src)
-    df = _read_bigvul_csv(src)
+    if input_csv:
+        logger.info(
+            "Ignoring --input=%s because the function baseline now loads %s directly from Hugging Face",
+            input_csv,
+            TRAINING_DATASET_NAME,
+        )
+    logger.info("Loading %s training source", TRAINING_DATASET_NAME)
+    df = load_primevul_training_data()
     stage_summaries: list[dict] = []
 
     all_cwe = _select_labeled_rows(df)
     stage_summaries.append(_make_stage_summary("raw_labeled_input", df, all_cwe))
     logger.info(
-        "Labeled CWE pool: %d total rows across %d CWEs (%d vul, %d benign)",
+        "Normalized %s pool: %d rows across %d CWEs (%d vul, %d benign)",
+        TRAINING_DATASET_NAME,
         len(all_cwe),
         _count_unique_cwes(all_cwe),
         int((all_cwe["vul"] == 1).sum()),
@@ -416,13 +398,24 @@ def extract_func_subset(
 
     achieved_vul = int((subset["vul"] == 1).sum())
     achieved_benign = int((subset["vul"] == 0).sum())
+    subset = subset.reset_index(drop=True)
+    if "sample_id" not in subset.columns:
+        subset.insert(0, "sample_id", range(len(subset)))
     subset_with_meta = subset.copy()
 
     # Keep only needed columns
-    keep_cols = ["project", "func_before", "cve_id", "cwe_id", "vul"]
+    keep_cols = [
+        "sample_id",
+        "project",
+        "commit_id",
+        "func_before",
+        "cve_id",
+        "cwe_id",
+        "vul",
+        "source_split",
+    ]
     keep_cols = [c for c in keep_cols if c in subset.columns]
     subset = subset[keep_cols].copy()
-    subset.insert(0, "sample_id", range(len(subset)))
 
     # Write outputs
     subset.to_csv(dst, index=False)
@@ -432,6 +425,7 @@ def extract_func_subset(
     )
 
     config_dict = {
+        "dataset_name": TRAINING_DATASET_NAME,
         "subset_scope": "all_labeled_cwes",
         "max_project_rows": FUNC_MAX_PROJECT_ROWS,
         "max_whitespace_tokens": FUNC_MAX_WHITESPACE_TOKENS,
@@ -461,8 +455,8 @@ def extract_func_subset(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Extract function-level multi-CWE subset")
-    parser.add_argument("--input", type=str, default=None, help="Path to Big-Vul CSV")
+    parser = argparse.ArgumentParser(description="Extract function-level PrimeVul subset")
+    parser.add_argument("--input", type=str, default=None, help="Unused legacy input argument")
     parser.add_argument("--output", type=str, default=None, help="Path to output subset CSV")
     parser.add_argument("--manifest", type=str, default=None, help="Path to output manifest JSON")
     parser.add_argument("--report", type=str, default=None, help="Path to output report MD")

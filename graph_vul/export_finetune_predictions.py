@@ -26,7 +26,12 @@ from graph_vul.config import (
     HELDOUT_CWE_IDS,
     UNIXCODER_MODEL_NAME,
 )
-from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, finetune_graph_collate
+from graph_vul.dataset.func_finetune_dataset import (
+    FuncFinetuneDataset,
+    available_splits,
+    finetune_graph_collate,
+    load_split_assignments,
+)
 from graph_vul.model.func_finetune_lit_module import FuncFinetuneLitModule
 
 logger = logging.getLogger(__name__)
@@ -49,8 +54,7 @@ def build_split_metadata(
     splits_dir: str | Path = FUNC_SPLITS_DIR,
 ) -> pd.DataFrame:
     subset_df = pd.read_csv(subset_csv)
-    assignments = pd.read_csv(Path(splits_dir) / "assignments.csv")
-    split_assignments = assignments[assignments["split"] == split][["sample_id", "split"]].copy()
+    split_assignments = load_split_assignments(split=split, splits_dir=splits_dir)
     merged = subset_df.merge(split_assignments, on="sample_id", how="inner", sort=False)
     if "is_unseen_cwe" not in merged.columns:
         merged["is_unseen_cwe"] = merged["cwe_id"].astype(str).isin(HELDOUT_CWE_IDS) | merged["split"].str.startswith("unseen")
@@ -159,9 +163,13 @@ def export_predictions(
     tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
     model = FuncFinetuneLitModule.load_from_checkpoint(checkpoint_path, map_location=device)
     model.to(device)
+    available = set(available_splits(splits_dir))
 
     outputs: dict[str, str] = {}
     for split in splits:
+        if split not in available:
+            logger.info("Skipping %s export because the split is not present in %s", split, splits_dir)
+            continue
         exported = export_split_predictions(
             model=model,
             tokenizer=tokenizer,

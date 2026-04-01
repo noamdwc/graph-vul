@@ -8,11 +8,14 @@ import pytest
 import graph_vul.pipeline.split_data as split_module
 from graph_vul.pipeline.split_data import (
     ALL_SPLITS,
+    DERIVED_UNSEEN_ASSIGNMENTS_FILENAME,
     _assign_splits,
     _assign_unseen_splits,
     _build_unseen_pool,
     _compute_sample_weights,
+    _derive_unseen_official_assignments,
     _enforce_min_split_sizes,
+    _materialize_official_split_assignments,
     _validate_heldout_eligibility,
     _validate_splits,
     split_data,
@@ -253,6 +256,79 @@ class TestValidateSplits:
         )
         cwe_leak_warnings = [w for w in warnings if "HELD-OUT CWE LEAKAGE" in w]
         assert len(cwe_leak_warnings) >= 1
+
+    def test_official_split_mode_does_not_require_unseen_splits(self):
+        base_df = pd.DataFrame({
+            "sample_id": [1, 2, 3, 4, 5, 6],
+            "project": ["A", "A", "B", "B", "C", "C"],
+            "func_before": [f"f{i}" for i in range(6)],
+            "cwe_id": ["CWE-119"] * 6,
+            "vul": [1, 0, 1, 0, 1, 0],
+        })
+        assignments = pd.DataFrame({
+            "sample_id": [1, 2, 3, 4, 5, 6],
+            "split": ["train", "train", "val", "val", "test", "test"],
+        })
+
+        warnings = _validate_splits(base_df, assignments, expected_splits=["train", "val", "test"])
+        assert all("empty" not in warning.lower() for warning in warnings)
+
+
+class TestOfficialSplitAssignments:
+    def test_materializes_val_from_validation(self):
+        df = pd.DataFrame({
+            "sample_id": [1, 2, 3],
+            "source_split": ["train", "validation", "test"],
+        })
+
+        assignments = _materialize_official_split_assignments(df)
+
+        assert assignments.to_dict("records") == [
+            {"sample_id": 1, "split": "train"},
+            {"sample_id": 2, "split": "val"},
+            {"sample_id": 3, "split": "test"},
+        ]
+
+    def test_derives_unseen_from_val_and_test_cwes_absent_from_train(self):
+        df = pd.DataFrame({
+            "sample_id": [1, 2, 3, 4, 5],
+            "cwe_id": ["CWE-119", "CWE-119", "CWE-777", "CWE-119", "CWE-888"],
+        })
+        assignments = pd.DataFrame({
+            "sample_id": [1, 2, 3, 4, 5],
+            "split": ["train", "val", "val", "test", "test"],
+        })
+
+        derived = _derive_unseen_official_assignments(df, assignments)
+
+        assert derived.to_dict("records") == [
+            {"sample_id": 3, "split": "unseen_val"},
+            {"sample_id": 5, "split": "unseen_test"},
+        ]
+
+    def test_split_data_writes_derived_unseen_assignments_file(self, tmp_path):
+        subset_csv = tmp_path / "func_subset.csv"
+        out_dir = tmp_path / "func_splits"
+        rows = []
+        sample_id = 1
+        for idx in range(40):
+            rows.append({"sample_id": sample_id, "project": f"T{idx}", "func_before": f"train {idx}", "cwe_id": "CWE-119", "vul": idx % 2, "source_split": "train"})
+            sample_id += 1
+        for idx in range(30):
+            rows.append({"sample_id": sample_id, "project": f"V{idx}", "func_before": f"val {idx}", "cwe_id": "CWE-119" if idx < 15 else "CWE-777", "vul": idx % 2, "source_split": "val"})
+            sample_id += 1
+        for idx in range(30):
+            rows.append({"sample_id": sample_id, "project": f"S{idx}", "func_before": f"test {idx}", "cwe_id": "CWE-119" if idx < 15 else "CWE-888", "vul": idx % 2, "source_split": "test"})
+            sample_id += 1
+
+        pd.DataFrame(rows).to_csv(subset_csv, index=False)
+
+        split_data(input_csv=str(subset_csv), output_dir=str(out_dir), seed=42)
+
+        derived_path = out_dir / DERIVED_UNSEEN_ASSIGNMENTS_FILENAME
+        assert derived_path.exists()
+        derived = pd.read_csv(derived_path)
+        assert set(derived["split"].unique()) == {"unseen_val", "unseen_test"}
 
     def test_enforces_min_split_sizes(self):
         df = pd.DataFrame({

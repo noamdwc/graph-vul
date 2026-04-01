@@ -1,4 +1,4 @@
-"""Tier-1 external evaluation: run trained checkpoint on PrimeVul & DiverseVul."""
+"""Tier-1 external evaluation: run a PrimeVul-trained checkpoint on external datasets."""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def _generate_summary(
     all_metrics: dict[str, dict],
     output_dir: Path,
 ) -> None:
-    """Write summary.md comparing all datasets."""
+    """Write summary.md comparing external datasets for the PrimeVul-trained checkpoint."""
     cols = ["accuracy", "precision", "recall", "f1", "pr_auc", "roc_auc"]
     header = "| Dataset | Samples | Vul | Benign | " + " | ".join(c.replace("_", " ").upper() for c in cols) + " |"
     sep = "|" + "|".join(["---"] * (len(cols) + 4)) + "|"
@@ -125,7 +125,7 @@ def _generate_summary(
         row = f"| {name} | {m.get('num_samples', 'N/A')} | {m.get('num_vulnerable', 'N/A')} | {m.get('num_benign', 'N/A')} | " + " | ".join(vals) + " |"
         rows.append(row)
 
-    summary = f"# External Evaluation — Tier 1 Summary\n\n{header}\n{sep}\n" + "\n".join(rows) + "\n"
+    summary = f"# External Evaluation — PrimeVul-Trained Checkpoint\n\n{header}\n{sep}\n" + "\n".join(rows) + "\n"
     summary_path = output_dir / "summary.md"
     summary_path.write_text(summary)
     logger.info("Wrote summary to %s", summary_path)
@@ -162,7 +162,8 @@ def evaluate_external(
     if bigvul_metrics is not None:
         combined_metrics["bigvul_test"] = bigvul_metrics
 
-    for dataset_name, loader_fn in EXTERNAL_DATASETS.items():
+    active_external = {name: fn for name, fn in EXTERNAL_DATASETS.items() if name != "primevul"}
+    for dataset_name, loader_fn in active_external.items():
         logger.info("=== Evaluating %s ===", dataset_name)
         df = loader_fn()
 

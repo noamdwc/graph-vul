@@ -171,31 +171,31 @@ stages:
   func_extract_subset:
     cmd: python -m graph_vul.pipeline.func_extract_subset
     deps:
-    - path: data/bigvul.csv
-      hash: md5
-      md5: 95436ff6b6eb8b95c44f42dee5fe7541
-      size: 1541009577
     - path: graph_vul/config.py
       hash: md5
-      md5: 9b383cf69f61232bf96212024a6c9ca1
-      size: 3498
+      md5: c6033ae8d2ba746d47929c32e95b501e
+      size: 3610
+    - path: graph_vul/dataset/primevul_adapter.py
+      hash: md5
+      md5: 5d94d67ecc93b517c6911712d17e7de6
+      size: 3767
     - path: graph_vul/pipeline/func_extract_subset.py
       hash: md5
-      md5: c685795d3709decc02cd518619f7a24f
-      size: 16860
+      md5: 01bff64a541428d94a552b30f060e092
+      size: 16603
     outs:
     - path: data/func_subset.csv
       hash: md5
-      md5: 4f08bfe20f5c8e1ad79140990706f719
-      size: 64858657
+      md5: 7af2f4adf9f6e059ec9e7716698ac861
+      size: 143371717
     - path: data/func_subset_manifest.json
       hash: md5
-      md5: 1a5995489ff46f7528b844ccb746283c
-      size: 26624
+      md5: 47f4f4a81ef90b06973125fbd4baf11b
+      size: 43504
     - path: data/func_subset_report.md
       hash: md5
-      md5: 07a2bba5de0fd249cc6c572d4595e28c
-      size: 11183
+      md5: 4bffcfb2d188cddc1f7d7cd1a43f7525
+      size: 20464
   func_embed:
     cmd: python -m graph_vul.pipeline.embed_functions
     deps:
@@ -223,17 +223,17 @@ stages:
     deps:
     - path: data/func_subset.csv
       hash: md5
-      md5: 4f08bfe20f5c8e1ad79140990706f719
-      size: 64858657
+      md5: 7af2f4adf9f6e059ec9e7716698ac861
+      size: 143371717
     - path: graph_vul/pipeline/split_data.py
       hash: md5
-      md5: e3daeccc350f01b24efa3adc9a730df9
-      size: 51907
+      md5: a896e9ae132a69b60788ad23c4477c56
+      size: 60105
     outs:
     - path: data/func_splits
       hash: md5
-      md5: 218d5f8860fe1547d706597fc68fcf65.dir
-      size: 3864908
+      md5: 3c90bc7352459291c8112a8d5976bd8b.dir
+      size: 12364566
       nfiles: 5
   func_train:
     cmd: python -m graph_vul.train_baseline --epochs 50 --batch-size 64 --lr 
@@ -285,8 +285,8 @@ stages:
     deps:
     - path: data/cwe_descriptions.json
       hash: md5
-      md5: e7fc6506a411333f6e6490fabc10b442
-      size: 21209
+      md5: 606368f9f188e5e2edf597811761122e
+      size: 31108
     - path: graph_vul/pipeline/embed_cwe.py
       hash: md5
       md5: 3bbbd6cf8ec775a27938c6c5aff5103d
@@ -298,9 +298,9 @@ stages:
     outs:
     - path: data/processed/cwe_embeddings
       hash: md5
-      md5: 846ea68e28fdf68ed75e61545119eb4b.dir
-      size: 282225
-      nfiles: 91
+      md5: 7d9d4fb5002ea7228dd0e8804617d374.dir
+      size: 453396
+      nfiles: 146
   func_finetune:
     cmd: python -m graph_vul.train_finetune
     deps:

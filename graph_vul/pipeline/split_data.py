@@ -53,6 +53,68 @@ from graph_vul.config import (
 logger = logging.getLogger(__name__)
 
 ALL_SPLITS = ["train", "val", "test", "unseen_val", "unseen_test"]
+PRIMARY_SPLITS = ["train", "val", "test"]
+DERIVED_UNSEEN_ASSIGNMENTS_FILENAME = "unseen_assignments.csv"
+
+
+def _active_splits(assignments: pd.DataFrame, expected_splits: list[str] | None = None) -> list[str]:
+    if expected_splits is not None:
+        return expected_splits
+    present = set(assignments["split"].unique())
+    return [split for split in ALL_SPLITS if split in present]
+
+
+def _load_derived_unseen_assignments(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=["sample_id", "split"])
+    return pd.read_csv(path, usecols=["sample_id", "split"])
+
+
+def _materialize_official_split_assignments(df: pd.DataFrame) -> pd.DataFrame:
+    """Build assignments directly from normalized source_split values."""
+    if "source_split" not in df.columns:
+        raise ValueError("Official split mode requires a source_split column")
+
+    split_map = {"train": "train", "validation": "val", "val": "val", "test": "test"}
+    normalized = df[["sample_id", "source_split"]].copy()
+    missing = normalized["source_split"].isna().sum()
+    if missing:
+        logger.warning(
+            "Dropping %d rows with missing source_split labels before materializing official assignments",
+            int(missing),
+        )
+        normalized = normalized[normalized["source_split"].notna()].copy()
+    normalized["split"] = normalized["source_split"].astype(str).str.lower().map(split_map)
+    if normalized["split"].isna().any():
+        bad = sorted(normalized.loc[normalized["split"].isna(), "source_split"].astype(str).unique())
+        raise ValueError(f"Unsupported official split labels: {bad}")
+    return normalized[["sample_id", "split"]]
+
+
+def _derive_unseen_official_assignments(
+    df: pd.DataFrame,
+    primary_assignments: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build derived unseen subsets from official val/test rows with CWEs absent from train."""
+    merged = df.merge(primary_assignments, on="sample_id", how="inner")
+    merged["cwe_id"] = merged["cwe_id"].fillna("").astype(str).str.strip()
+    train_cwes = {
+        cwe for cwe in merged.loc[merged["split"] == "train", "cwe_id"].unique()
+        if cwe and cwe.lower() != "nan"
+    }
+
+    rows = []
+    for source_split, unseen_split in (("val", "unseen_val"), ("test", "unseen_test")):
+        split_df = merged[merged["split"] == source_split].copy()
+        split_df = split_df[split_df["cwe_id"].astype(bool)]
+        split_df = split_df[~split_df["cwe_id"].isin(train_cwes)]
+        if len(split_df) == 0:
+            continue
+        rows.append(split_df[["sample_id"]].assign(split=unseen_split))
+
+    if not rows:
+        return pd.DataFrame(columns=["sample_id", "split"])
+    return pd.concat(rows, ignore_index=True).drop_duplicates(subset=["sample_id", "split"])
 
 # Unseen split balance constants
 UNSEEN_PROJECT_COUNT_PENALTY = 20.0
@@ -553,6 +615,7 @@ def _validate_splits(
     df: pd.DataFrame,
     assignments: pd.DataFrame,
     heldout_cwe_ids: list[str] | None = None,
+    expected_splits: list[str] | None = None,
 ) -> list[str]:
     """Validate split properties across all five splits. Returns list of warnings."""
     warnings: list[str] = []
@@ -564,13 +627,14 @@ def _validate_splits(
         warnings.append(f"Row count mismatch: {len(df)} input rows, {len(merged)} assigned")
 
     # Collect projects per split
+    active_splits = expected_splits if expected_splits is not None else ALL_SPLITS
     split_projects: dict[str, set[str]] = {}
-    for split_name in ALL_SPLITS:
+    for split_name in active_splits:
         split_df = merged[merged["split"] == split_name]
         split_projects[split_name] = set(split_df["project"].unique())
 
     # Check all 10 split pairs for project overlap
-    for s1, s2 in combinations(ALL_SPLITS, 2):
+    for s1, s2 in combinations(active_splits, 2):
         overlap = split_projects.get(s1, set()) & split_projects.get(s2, set())
         if overlap:
             warnings.append(f"PROJECT OVERLAP between {s1} and {s2}: {overlap}")
@@ -605,7 +669,7 @@ def _validate_splits(
 
     # Check split sizes and single-class splits
     total = len(merged)
-    for split_name in ALL_SPLITS:
+    for split_name in active_splits:
         split_n = (merged["split"] == split_name).sum()
         if split_n == 0:
             warnings.append(f"Split '{split_name}' is empty")
@@ -696,6 +760,26 @@ def _validate_short_bucket_coverage(
                 f"rows — too few for reliable short-function metrics"
             )
 
+    return warnings
+
+
+def _validate_derived_unseen_assignments(
+    df: pd.DataFrame,
+    derived_assignments: pd.DataFrame,
+) -> list[str]:
+    warnings: list[str] = []
+    if derived_assignments.empty:
+        warnings.append("Derived unseen subsets are empty")
+        return warnings
+
+    merged = df.merge(derived_assignments, on="sample_id", how="inner")
+    for split_name in ["unseen_val", "unseen_test"]:
+        split_df = merged[merged["split"] == split_name]
+        if len(split_df) == 0:
+            warnings.append(f"Derived split '{split_name}' is empty")
+            continue
+        if split_df["vul"].nunique() < 2:
+            warnings.append(f"Derived split '{split_name}' has only one class")
     return warnings
 
 
@@ -830,12 +914,17 @@ def _generate_split_report(
     warnings: list[str],
     migration_info: dict[str, list[str]] | None = None,
     weights_df: pd.DataFrame | None = None,
+    mode: str = "derived",
+    derived_unseen_assignments: pd.DataFrame | None = None,
 ) -> str:
     """Generate a Markdown diagnostics report."""
     merged = df.merge(assignments, on="sample_id")
+    active_splits = _active_splits(assignments)
 
     lines = [
         "# Split Diagnostics Report",
+        "",
+        f"- Split mode: {mode}",
         "",
         "## Split Sizes",
         "",
@@ -843,7 +932,7 @@ def _generate_split_report(
         "|-------|-------|------------|--------|-----------|----------|------|",
     ]
 
-    for split_name in ALL_SPLITS:
+    for split_name in active_splits:
         split_df = merged[merged["split"] == split_name]
         if len(split_df) == 0:
             continue
@@ -865,7 +954,7 @@ def _generate_split_report(
         lines.extend(["", "## Per-CWE Breakdown", ""])
         lines.append("| Split | CWE | Total | Vulnerable | Benign |")
         lines.append("|-------|-----|-------|------------|--------|")
-        for split_name in ALL_SPLITS:
+        for split_name in active_splits:
             split_df = merged[merged["split"] == split_name]
             for cwe_id in sorted(split_df["cwe_id"].unique()):
                 cwe_rows = split_df[split_df["cwe_id"] == cwe_id]
@@ -878,18 +967,18 @@ def _generate_split_report(
         lines.extend(["", "## CVE Coverage", ""])
         lines.append("| Split | Unique CVEs | CVE List |")
         lines.append("|-------|-------------|----------|")
-        for split_name in ALL_SPLITS:
+        for split_name in active_splits:
             split_df = merged[merged["split"] == split_name]
             if len(split_df) == 0:
                 continue
-            cves = sorted(split_df["cve_id"].unique())
+            cves = sorted(split_df["cve_id"].dropna().astype(str).unique().tolist())
             lines.append(f"| {split_name} | {len(cves)} | {', '.join(str(c) for c in cves)} |")
 
     # Project coverage
     lines.extend(["", "## Project Coverage", ""])
     lines.append("| Split | Unique Projects | Project List |")
     lines.append("|-------|-----------------|--------------|")
-    for split_name in ALL_SPLITS:
+    for split_name in active_splits:
         split_df = merged[merged["split"] == split_name]
         if len(split_df) == 0:
             continue
@@ -903,7 +992,7 @@ def _generate_split_report(
         split_df = merged[merged["split"] == split_name]
         split_projects[split_name] = set(split_df["project"].unique())
 
-    for s1, s2 in combinations(ALL_SPLITS, 2):
+    for s1, s2 in combinations(active_splits, 2):
         p1 = split_projects.get(s1, set())
         p2 = split_projects.get(s2, set())
         if not p1 and not p2:
@@ -956,20 +1045,20 @@ def _generate_split_report(
             lines.append("")
 
     # Val/test/unseen project details
-    for split_name in ["val", "test", "unseen_val", "unseen_test"]:
-        split_df = merged[merged["split"] == split_name]
-        if len(split_df) == 0:
-            continue
-        lines.extend(["", f"## {split_name.replace('_', ' ').title()} Projects", ""])
-        for proj in sorted(split_df["project"].unique()):
-            proj_df = split_df[split_df["project"] == proj]
-            vul = int((proj_df["vul"] == 1).sum())
-            benign = int((proj_df["vul"] == 0).sum())
-            if "cve_id" in proj_df.columns:
-                cves = sorted(proj_df["cve_id"].unique())
-                lines.append(f"- **{proj}** ({len(proj_df)} rows, {vul} vul, {benign} benign, CVEs: {', '.join(str(c) for c in cves)})")
-            else:
-                lines.append(f"- **{proj}** ({len(proj_df)} rows, {vul} vul, {benign} benign)")
+        for split_name in ["val", "test", "unseen_val", "unseen_test"]:
+            split_df = merged[merged["split"] == split_name]
+            if len(split_df) == 0:
+                continue
+            lines.extend(["", f"## {split_name.replace('_', ' ').title()} Projects", ""])
+            for proj in sorted(split_df["project"].unique()):
+                proj_df = split_df[split_df["project"] == proj]
+                vul = int((proj_df["vul"] == 1).sum())
+                benign = int((proj_df["vul"] == 0).sum())
+                if "cve_id" in proj_df.columns:
+                    cves = sorted(proj_df["cve_id"].dropna().astype(str).unique().tolist())
+                    lines.append(f"- **{proj}** ({len(proj_df)} rows, {vul} vul, {benign} benign, CVEs: {', '.join(str(c) for c in cves)})")
+                else:
+                    lines.append(f"- **{proj}** ({len(proj_df)} rows, {vul} vul, {benign} benign)")
 
     # Metadata distributions (qcut-based char/line buckets)
     for col in ("code_char_len_bucket", "code_line_count_bucket"):
@@ -979,7 +1068,7 @@ def _generate_split_report(
         ct = pd.crosstab(merged["split"], merged[col])
         lines.append("| Split | " + " | ".join(str(c) for c in ct.columns) + " |")
         lines.append("|-------" + "".join("| --- " for _ in ct.columns) + "|")
-        for split_name in ALL_SPLITS:
+        for split_name in active_splits:
             if split_name in ct.index:
                 row_vals = " | ".join(str(ct.loc[split_name, c]) for c in ct.columns)
                 lines.append(f"| {split_name} | {row_vals} |")
@@ -990,7 +1079,7 @@ def _generate_split_report(
         bucket_order = TOKEN_BUCKET_LABELS
         lines.append("| Split | Bucket | Total | Vulnerable | Benign |")
         lines.append("|-------|--------|-------|------------|--------|")
-        for split_name in ALL_SPLITS:
+        for split_name in active_splits:
             split_df = merged[merged["split"] == split_name]
             if len(split_df) == 0:
                 continue
@@ -1087,6 +1176,47 @@ def _generate_split_report(
     else:
         lines.extend(["", "## Warnings", "", "No warnings — all constraints satisfied."])
 
+    if derived_unseen_assignments is not None and len(derived_unseen_assignments) > 0:
+        derived = df.merge(derived_unseen_assignments, on="sample_id", how="inner")
+        lines.extend(["", "## Derived Unseen Splits", ""])
+        lines.append("| Split | Total | Vulnerable | Benign | Unique CWEs |")
+        lines.append("|-------|-------|------------|--------|-------------|")
+        for split_name in ["unseen_val", "unseen_test"]:
+            split_df = derived[derived["split"] == split_name]
+            if len(split_df) == 0:
+                continue
+            vul = int((split_df["vul"] == 1).sum())
+            benign = len(split_df) - vul
+            cwes = int(split_df["cwe_id"].dropna().astype(str).nunique()) if "cwe_id" in split_df.columns else 0
+            lines.append(f"| {split_name} | {len(split_df)} | {vul} | {benign} | {cwes} |")
+
+        if "cwe_id" in derived.columns:
+            lines.extend(["", "### Derived Unseen CWE Breakdown", ""])
+            lines.append("| Split | CWE | Total | Vulnerable | Benign |")
+            lines.append("|-------|-----|-------|------------|--------|")
+            for split_name in ["unseen_val", "unseen_test"]:
+                split_df = derived[derived["split"] == split_name]
+                for cwe_id in sorted(split_df["cwe_id"].dropna().astype(str).unique().tolist()):
+                    cwe_rows = split_df[split_df["cwe_id"].astype(str) == cwe_id]
+                    vul = int((cwe_rows["vul"] == 1).sum())
+                    benign = len(cwe_rows) - vul
+                    lines.append(f"| {split_name} | {cwe_id} | {len(cwe_rows)} | {vul} | {benign} |")
+
+        if "code_token_count_bucket" in derived.columns:
+            lines.extend(["", "### Derived Unseen Short-Function Viability", ""])
+            lines.append("| Split | Short Vul | Short Benign | Vul Status | Benign Status |")
+            lines.append("|-------|-----------|--------------|------------|---------------|")
+            for split_name in ["unseen_val", "unseen_test"]:
+                split_df = derived[derived["split"] == split_name]
+                short_df = split_df[split_df["code_token_count_bucket"].astype(str) == "0-64"]
+                n_vul = int((short_df["vul"] == 1).sum())
+                n_benign = int((short_df["vul"] == 0).sum())
+                vul_status = "PASS" if n_vul >= MIN_SHORT_VUL_PER_EVAL_SPLIT else "WARN"
+                benign_status = "PASS" if n_benign >= MIN_SHORT_BENIGN_PER_EVAL_SPLIT else "WARN"
+                if n_vul < 10:
+                    vul_status = "UNRELIABLE"
+                lines.append(f"| {split_name} | {n_vul} | {n_benign} | {vul_status} | {benign_status} |")
+
     return "\n".join(lines) + "\n"
 
 
@@ -1100,6 +1230,8 @@ def split_data(
     seed: int = SEED,
 ) -> None:
     df = pd.read_csv(input_csv)
+    official_split_mode = "source_split" in df.columns and df["source_split"].notna().any()
+    derived_unseen_assignments = pd.DataFrame(columns=["sample_id", "split"])
 
     # Derive metadata for reporting
     code = df["func_before"].fillna("")
@@ -1126,12 +1258,15 @@ def split_data(
 
     # Validate held-out CWE eligibility
     has_cwe = "cwe_id" in df.columns
-    if has_cwe and HELDOUT_CWE_IDS:
+    if not official_split_mode and has_cwe and HELDOUT_CWE_IDS:
         _validate_heldout_eligibility(df, HELDOUT_CWE_IDS)
 
     # Build seen/unseen pools using full-project holdout
     migration_info: dict[str, list[str]] = {}
-    if has_cwe and HELDOUT_CWE_IDS:
+    if official_split_mode:
+        df_seen = df.copy()
+        df_unseen = pd.DataFrame(columns=df.columns)
+    elif has_cwe and HELDOUT_CWE_IDS:
         df_seen, df_unseen, migration_info = _build_unseen_pool(df, HELDOUT_CWE_IDS)
         logger.info(
             "Full-project holdout: %d projects (%d rows) moved to unseen pool, "
@@ -1149,10 +1284,14 @@ def split_data(
         df_unseen = pd.DataFrame(columns=df.columns)
 
     # Assign seen splits (stratified by label, grouped by project)
-    assignments = _assign_splits(df_seen, seed)
+    if official_split_mode:
+        assignments = _materialize_official_split_assignments(df_seen)
+        derived_unseen_assignments = _derive_unseen_official_assignments(df_seen, assignments)
+    else:
+        assignments = _assign_splits(df_seen, seed)
 
     # Assign unseen splits
-    if len(df_unseen) > 0:
+    if not official_split_mode and len(df_unseen) > 0:
         unseen_assignments = _assign_unseen_splits(df_unseen, seed)
         assignments = pd.concat([assignments, unseen_assignments], ignore_index=True)
 
@@ -1164,8 +1303,17 @@ def split_data(
         min_rows=MIN_SPLIT_ROWS,
         min_frac=MIN_SPLIT_FRAC,
     )
-    warnings = _validate_splits(df_all, assignments, heldout_cwe_ids=HELDOUT_CWE_IDS if has_cwe else None)
+    expected_splits = ["train", "val", "test"] if official_split_mode else ALL_SPLITS
+    warnings = _validate_splits(
+        df_all,
+        assignments,
+        heldout_cwe_ids=None if official_split_mode else (HELDOUT_CWE_IDS if has_cwe else None),
+        expected_splits=expected_splits,
+    )
     warnings.extend(_validate_short_bucket_coverage(df_all, assignments))
+    if official_split_mode:
+        warnings.append("Official split mode active: unseen_val and unseen_test are derived from val/test CWEs absent from train")
+        warnings.extend(_validate_derived_unseen_assignments(df_all, derived_unseen_assignments))
     for w in warnings:
         logger.warning(w)
 
@@ -1176,6 +1324,10 @@ def split_data(
     assignments_path = out / "assignments.csv"
     assignments.to_csv(assignments_path, index=False)
     logger.info("Wrote split assignments to %s", assignments_path)
+    if official_split_mode:
+        derived_path = out / DERIVED_UNSEEN_ASSIGNMENTS_FILENAME
+        derived_unseen_assignments.to_csv(derived_path, index=False)
+        logger.info("Wrote derived unseen assignments to %s", derived_path)
 
     # Train balancing
     weights_df = None
@@ -1193,7 +1345,7 @@ def split_data(
         logger.info("Wrote balanced training manifest to %s", manifest_path)
 
     # Generate unseen audit CSV
-    if len(df_unseen) > 0:
+    if not official_split_mode and len(df_unseen) > 0:
         unseen_merged = df_unseen.merge(assignments, on="sample_id")
         audit_rows = []
         for split_name in ["unseen_val", "unseen_test"]:
@@ -1224,14 +1376,23 @@ def split_data(
             logger.info("Wrote unseen audit CSV to %s", audit_path)
 
     # Generate report
-    report = _generate_split_report(df_all, assignments, warnings, migration_info, weights_df)
+    report_mode = "official_source_split" if official_split_mode else "derived_group_split"
+    report = _generate_split_report(
+        df_all,
+        assignments,
+        warnings,
+        migration_info,
+        weights_df,
+        mode=report_mode,
+        derived_unseen_assignments=derived_unseen_assignments if official_split_mode else None,
+    )
     report_path = out / "split_report.md"
     with open(report_path, "w") as f:
         f.write(report)
     logger.info("Wrote split report to %s", report_path)
 
     # Log summary
-    for split_name in ALL_SPLITS:
+    for split_name in _active_splits(assignments, expected_splits):
         n = (assignments["split"] == split_name).sum()
         if n > 0:
             logger.info("Split '%s': %d rows", split_name, n)

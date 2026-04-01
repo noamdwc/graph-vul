@@ -28,7 +28,7 @@ from graph_vul.config import (
     SEED,
     UNIXCODER_MODEL_NAME,
 )
-from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, finetune_graph_collate
+from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, available_splits, finetune_graph_collate
 from graph_vul.model.func_finetune_lit_module import FuncFinetuneLitModule
 
 logger = logging.getLogger(__name__)
@@ -88,11 +88,10 @@ def train(
     tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
 
     # Datasets
+    split_names = available_splits(FUNC_SPLITS_DIR)
     train_ds = FuncFinetuneDataset(split="train", tokenizer=tokenizer, use_graph=use_graph)
     val_ds = FuncFinetuneDataset(split="val", tokenizer=tokenizer, use_graph=use_graph)
     test_ds = FuncFinetuneDataset(split="test", tokenizer=tokenizer, use_graph=use_graph)
-
-    unseen_val_ds = FuncFinetuneDataset(split="unseen_val", tokenizer=tokenizer, use_graph=use_graph)
 
     collate_fn = finetune_graph_collate if use_graph else None
 
@@ -100,14 +99,20 @@ def train(
         val_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
         collate_fn=collate_fn,
     )
-    unseen_val_loader = DataLoader(
-        unseen_val_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
-        collate_fn=collate_fn,
-    )
     test_loader = DataLoader(
         test_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
         collate_fn=collate_fn,
     )
+    val_dataloaders = [val_loader]
+    if "unseen_val" in split_names:
+        unseen_val_ds = FuncFinetuneDataset(split="unseen_val", tokenizer=tokenizer, use_graph=use_graph)
+        unseen_val_loader = DataLoader(
+            unseen_val_ds, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True,
+            collate_fn=collate_fn,
+        )
+        val_dataloaders.append(unseen_val_loader)
+    else:
+        unseen_val_ds = None
 
     # Weighted resampling for class balance
     subset_meta = pd.read_csv(FUNC_SUBSET_CSV, usecols=["sample_id", "vul"])
@@ -127,7 +132,7 @@ def train(
 
     logger.info(
         "Train: %d functions (%d pos, %d neg), Val: %d, Unseen Val: %d, Test: %d",
-        len(train_ds), int(num_pos), int(num_neg), len(val_ds), len(unseen_val_ds), len(test_ds),
+        len(train_ds), int(num_pos), int(num_neg), len(val_ds), len(unseen_val_ds) if unseen_val_ds is not None else 0, len(test_ds),
     )
     logger.info(
         "Effective batch size: %d (batch=%d x accum=%d)",
@@ -190,14 +195,14 @@ def train(
         gradient_clip_val=1.0,
     )
 
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=[val_loader, unseen_val_loader])
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_dataloaders)
 
     # Test on seen CWEs
     model.set_test_prefix("test")
     trainer.test(model, dataloaders=test_loader, ckpt_path="best")
 
     # Test on unseen_test (unseen_val is already evaluated every epoch)
-    unseen_splits = ["unseen_test"]
+    unseen_splits = [split_name for split_name in ["unseen_test"] if split_name in split_names]
     for split_name in unseen_splits:
         ds = FuncFinetuneDataset(split=split_name, tokenizer=tokenizer, use_graph=use_graph)
         if len(ds) == 0:

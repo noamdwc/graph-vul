@@ -27,7 +27,12 @@ torch_geometric_module.data = torch_geometric_data_module
 sys.modules.setdefault("torch_geometric", torch_geometric_module)
 sys.modules.setdefault("torch_geometric.data", torch_geometric_data_module)
 
-from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, finetune_graph_collate
+from graph_vul.dataset.func_finetune_dataset import (
+    FuncFinetuneDataset,
+    available_splits,
+    finetune_graph_collate,
+    load_split_assignments,
+)
 
 
 class _FakeTokenizer:
@@ -92,3 +97,41 @@ def test_finetune_dataset_exposes_sample_id_and_token_count(tmp_path):
     batch = finetune_graph_collate([first, second])
     assert batch["sample_id"].tolist() == [101, 202]
     assert batch["token_count"].tolist() == [3, 2]
+
+
+def test_available_splits_returns_present_splits_in_canonical_order(tmp_path):
+    splits_dir = tmp_path / "splits"
+    splits_dir.mkdir()
+
+    pd.DataFrame(
+        [
+            {"sample_id": 1, "split": "test"},
+            {"sample_id": 2, "split": "train"},
+            {"sample_id": 3, "split": "val"},
+        ]
+    ).to_csv(splits_dir / "assignments.csv", index=False)
+
+    assert available_splits(splits_dir) == ["train", "val", "test"]
+
+
+def test_available_splits_includes_derived_unseen_splits(tmp_path):
+    splits_dir = tmp_path / "splits"
+    splits_dir.mkdir()
+
+    pd.DataFrame(
+        [
+            {"sample_id": 1, "split": "train"},
+            {"sample_id": 2, "split": "val"},
+            {"sample_id": 3, "split": "test"},
+        ]
+    ).to_csv(splits_dir / "assignments.csv", index=False)
+    pd.DataFrame(
+        [
+            {"sample_id": 2, "split": "unseen_val"},
+            {"sample_id": 3, "split": "unseen_test"},
+        ]
+    ).to_csv(splits_dir / "unseen_assignments.csv", index=False)
+
+    assert available_splits(splits_dir) == ["train", "val", "test", "unseen_val", "unseen_test"]
+    unseen = load_split_assignments("unseen_test", splits_dir)
+    assert unseen.to_dict("records") == [{"sample_id": 3, "split": "unseen_test"}]
