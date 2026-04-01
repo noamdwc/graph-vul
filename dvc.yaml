@@ -111,8 +111,8 @@ stages:
   #   - data/processed/func_embeddings
 
   func_split:
-    cmd: python -m graph_vul.pipeline.split_data --input data/func_subset.csv 
-      --output data/func_splits
+    cmd: python -m graph_vul.pipeline.split_data --input data/func_subset.csv
+      --output data/func_splits --split-mode project_disjoint
     deps:
     - data/func_subset.csv
     - graph_vul/pipeline/split_data.py
