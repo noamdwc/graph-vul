@@ -130,6 +130,66 @@ def _dejoin_official_splits(
         columns={"_norm_split": "split"}
     )
 
+    # Preserve unseen CWE coverage: anchor smallest carrier per at-risk CWE
+    if "cwe_id" in df.columns:
+        official_train_cwes = set(
+            df.loc[df["_norm_split"] == "train", "cwe_id"].dropna().unique()
+        )
+        # CWEs that are unseen under official splits (in val/test but not train)
+        for eval_split in ["val", "test"]:
+            eval_cwes = set(
+                df.loc[df["_norm_split"] == eval_split, "cwe_id"].dropna().unique()
+            )
+            unseen_cwes = eval_cwes - official_train_cwes
+            if not unseen_cwes:
+                continue
+
+            for cwe in sorted(unseen_cwes):
+                # Check if any anchored project already covers this CWE in an eval split
+                anchored_eval_ids = set(
+                    anchored_assignments.loc[
+                        anchored_assignments["split"].isin(["val", "test"]), "sample_id"
+                    ]
+                )
+                anchored_eval_cwes = set(
+                    df.loc[df["sample_id"].isin(anchored_eval_ids), "cwe_id"].dropna().unique()
+                )
+                if cwe in anchored_eval_cwes:
+                    continue  # Already covered by a single-split eval project
+
+                # Find multi-split projects carrying this CWE
+                cwe_projects = set(
+                    df.loc[
+                        (df["cwe_id"] == cwe) & df["project"].isin(multi_split_projects),
+                        "project",
+                    ].unique()
+                )
+                if not cwe_projects:
+                    continue
+
+                # Pick the smallest carrier project
+                proj_sizes = (
+                    df[df["project"].isin(cwe_projects)]
+                    .groupby("project")
+                    .size()
+                    .sort_values()
+                )
+                anchor_proj = proj_sizes.index[0]
+
+                # Pre-anchor this project to the eval split
+                proj_mask = df["project"] == anchor_proj
+                proj_assignments = df.loc[proj_mask, ["sample_id"]].copy()
+                proj_assignments["split"] = eval_split
+                anchored_assignments = pd.concat(
+                    [anchored_assignments, proj_assignments], ignore_index=True
+                )
+                multi_split_projects.discard(anchor_proj)
+                logger.info(
+                    "Unseen CWE preservation: anchored project '%s' (%d rows) to '%s' "
+                    "to preserve CWE %s",
+                    anchor_proj, int(proj_sizes[anchor_proj]), eval_split, cwe,
+                )
+
     # Compute deficit targets for the greedy allocator
     total_rows = len(df)
     train_frac = 1.0 - val_frac - test_frac
@@ -152,7 +212,7 @@ def _dejoin_official_splits(
     # Reallocate multi-split projects using the greedy allocator
     df_multi = df[df["project"].isin(multi_split_projects)].copy()
     major_cwes = _select_major_cwes(df_multi)
-    project_stats = _build_project_stats(df_multi, major_cwes=major_cwes)
+    project_stats = _build_project_stats(df_multi, major_cwes=major_cwes, bucket_col="code_token_count_bucket")
     project_to_split = _greedy_project_split(
         project_stats,
         split_fracs=deficit_fracs,

@@ -394,6 +394,61 @@ class TestDejoinOfficialSplits:
         for split in ["val", "test"]:
             assert (assignments["split"] == split).sum() > 0, f"{split} is empty"
 
+    def test_preserves_unseen_cwe_coverage(self):
+        """Unseen CWEs (in val/test but not train) should remain in eval splits."""
+        rows = []
+        sample_id = 0
+        # Project with a CWE only in val under official split
+        # ProjectX: train has CWE-119, val has CWE-119 + CWE-777 (unseen)
+        for i in range(40):
+            rows.append({
+                "sample_id": sample_id, "project": "ProjectX",
+                "source_split": "train", "func_before": f"px-train-{i}",
+                "cwe_id": "CWE-119", "vul": 1 if i < 5 else 0,
+            })
+            sample_id += 1
+        for i in range(20):
+            rows.append({
+                "sample_id": sample_id, "project": "ProjectX",
+                "source_split": "val", "func_before": f"px-val-{i}",
+                "cwe_id": "CWE-777" if i < 10 else "CWE-119",
+                "vul": 1 if i < 3 else 0,
+            })
+            sample_id += 1
+        # Padding projects (single-split)
+        for proj_idx in range(10):
+            for i in range(10):
+                rows.append({
+                    "sample_id": sample_id, "project": f"T{proj_idx}",
+                    "source_split": "train", "func_before": f"t-{proj_idx}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+        for proj_idx in range(5):
+            for i in range(10):
+                rows.append({
+                    "sample_id": sample_id, "project": f"V{proj_idx}",
+                    "source_split": "val", "func_before": f"v-{proj_idx}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+        for proj_idx in range(5):
+            for i in range(10):
+                rows.append({
+                    "sample_id": sample_id, "project": f"S{proj_idx}",
+                    "source_split": "test", "func_before": f"s-{proj_idx}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+
+        df = pd.DataFrame(rows)
+        assignments = _dejoin_official_splits(df, seed=42)
+        merged = df.merge(assignments, on="sample_id")
+
+        # CWE-777 should still appear in an eval split (val or test), not only in train
+        eval_cwes = set(merged.loc[merged["split"].isin(["val", "test"]), "cwe_id"].unique())
+        assert "CWE-777" in eval_cwes, "Unseen CWE-777 should be preserved in eval splits"
+
 
 class TestComputeSampleWeights:
     def test_weights_sum_to_n(self, multi_cwe_subset_df):
