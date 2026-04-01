@@ -130,12 +130,22 @@ def _dejoin_official_splits(
         columns={"_norm_split": "split"}
     )
 
-    # Preserve unseen CWE coverage: anchor smallest carrier per at-risk CWE
+    # Preserve unseen CWE coverage: identify projects that must stay out of train
+    # so their CWEs remain "unseen" for zero-shot evaluation.
+    train_excluded_projects: set[str] = set()
     if "cwe_id" in df.columns:
         official_train_cwes = set(
             df.loc[df["_norm_split"] == "train", "cwe_id"].dropna().unique()
         )
-        # CWEs that are unseen under official splits (in val/test but not train)
+        anchored_eval_ids = set(
+            anchored_assignments.loc[
+                anchored_assignments["split"].isin(["val", "test"]), "sample_id"
+            ]
+        )
+        anchored_eval_cwes = set(
+            df.loc[df["sample_id"].isin(anchored_eval_ids), "cwe_id"].dropna().unique()
+        )
+
         for eval_split in ["val", "test"]:
             eval_cwes = set(
                 df.loc[df["_norm_split"] == eval_split, "cwe_id"].dropna().unique()
@@ -145,19 +155,10 @@ def _dejoin_official_splits(
                 continue
 
             for cwe in sorted(unseen_cwes):
-                # Check if any anchored project already covers this CWE in an eval split
-                anchored_eval_ids = set(
-                    anchored_assignments.loc[
-                        anchored_assignments["split"].isin(["val", "test"]), "sample_id"
-                    ]
-                )
-                anchored_eval_cwes = set(
-                    df.loc[df["sample_id"].isin(anchored_eval_ids), "cwe_id"].dropna().unique()
-                )
                 if cwe in anchored_eval_cwes:
                     continue  # Already covered by a single-split eval project
 
-                # Find multi-split projects carrying this CWE
+                # Find the smallest multi-split carrier — exclude it from train
                 cwe_projects = set(
                     df.loc[
                         (df["cwe_id"] == cwe) & df["project"].isin(multi_split_projects),
@@ -167,27 +168,18 @@ def _dejoin_official_splits(
                 if not cwe_projects:
                     continue
 
-                # Pick the smallest carrier project
                 proj_sizes = (
                     df[df["project"].isin(cwe_projects)]
                     .groupby("project")
                     .size()
                     .sort_values()
                 )
-                anchor_proj = proj_sizes.index[0]
-
-                # Pre-anchor this project to the eval split
-                proj_mask = df["project"] == anchor_proj
-                proj_assignments = df.loc[proj_mask, ["sample_id"]].copy()
-                proj_assignments["split"] = eval_split
-                anchored_assignments = pd.concat(
-                    [anchored_assignments, proj_assignments], ignore_index=True
-                )
-                multi_split_projects.discard(anchor_proj)
+                exclude_proj = proj_sizes.index[0]
+                train_excluded_projects.add(exclude_proj)
                 logger.info(
-                    "Unseen CWE preservation: anchored project '%s' (%d rows) to '%s' "
+                    "Unseen CWE preservation: excluding project '%s' (%d rows) from train "
                     "to preserve CWE %s",
-                    anchor_proj, int(proj_sizes[anchor_proj]), eval_split, cwe,
+                    exclude_proj, int(proj_sizes[exclude_proj]), cwe,
                 )
 
     # Compute deficit targets for the greedy allocator
@@ -213,11 +205,14 @@ def _dejoin_official_splits(
     df_multi = df[df["project"].isin(multi_split_projects)].copy()
     major_cwes = _select_major_cwes(df_multi)
     project_stats = _build_project_stats(df_multi, major_cwes=major_cwes, bucket_col="code_token_count_bucket")
+    # Build exclusion map: projects that must not go to train (unseen CWE carriers)
+    proj_excluded_splits = {p: {"train"} for p in train_excluded_projects} if train_excluded_projects else None
     project_to_split = _greedy_project_split(
         project_stats,
         split_fracs=deficit_fracs,
         seed=seed,
         allow_empty_splits=True,
+        project_excluded_splits=proj_excluded_splits,
     )
     reallocated_assignments = _expand_project_assignments(df_multi, project_to_split)
 
@@ -414,8 +409,13 @@ def _greedy_project_split(
     seed: int,
     project_count_targets: dict[str, int] | None = None,
     allow_empty_splits: bool = False,
+    project_excluded_splits: dict[str, set[str]] | None = None,
 ) -> dict[str, str]:
-    """Assign projects to splits greedily, optimizing for row targets first."""
+    """Assign projects to splits greedily, optimizing for row targets first.
+
+    project_excluded_splits: mapping of project name -> set of splits the project
+    must NOT be assigned to (e.g. {"linux": {"train"}} to keep linux out of train).
+    """
     splits = list(split_fracs.keys())
     eval_splits = [s for s in splits if s != "train"]
     has_short = "short_vul" in project_stats.columns
@@ -551,7 +551,17 @@ def _greedy_project_split(
         project_rows = float(project["total_rows"])
         project_vul = float(project["vulnerable_rows"])
 
+        proj_name = str(project["project"])
+        proj_excluded = (
+            project_excluded_splits.get(proj_name, set())
+            if project_excluded_splits
+            else set()
+        )
+
         for split in splits:
+            if split in proj_excluded:
+                continue
+
             empties_after = len(empty_splits) - (1 if state[split]["rows"] == 0 else 0)
             if not allow_empty_splits and remaining_projects < empties_after:
                 continue
@@ -632,8 +642,15 @@ def _greedy_project_split(
         for project, source_split in sorted(project_to_split.items(), key=lambda item: (-project_sizes[item[0]], item[0])):
             if split_counts.get(source_split, 0) <= 1:
                 continue
+            proj_excl = (
+                project_excluded_splits.get(project, set())
+                if project_excluded_splits
+                else set()
+            )
             for target_split in splits:
                 if target_split == source_split:
+                    continue
+                if target_split in proj_excl:
                     continue
                 candidate = dict(project_to_split)
                 candidate[project] = target_split
