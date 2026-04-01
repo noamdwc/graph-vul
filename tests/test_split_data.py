@@ -571,3 +571,167 @@ class TestSplitDataEndToEnd:
                 output_dir=str(tmp_path / "splits"),
                 seed=42,
             )
+
+
+class TestSplitModeArgument:
+    def test_official_mode_allows_project_overlap(self, tmp_path):
+        """Official mode preserves original splits, including project overlap."""
+        rows = []
+        sample_id = 0
+        # ProjectX in both train and val
+        for split in ["train", "val"]:
+            for i in range(30):
+                rows.append({
+                    "sample_id": sample_id, "project": "ProjectX",
+                    "source_split": split, "func_before": f"px-{split}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 5 else 0,
+                })
+                sample_id += 1
+        # Single-split projects for test and padding
+        for i in range(30):
+            rows.append({
+                "sample_id": sample_id, "project": f"T{i}",
+                "source_split": "test", "func_before": f"test-{i}",
+                "cwe_id": "CWE-119", "vul": 1 if i < 5 else 0,
+            })
+            sample_id += 1
+
+        csv_path = tmp_path / "data.csv"
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+        out = tmp_path / "splits"
+        split_data(input_csv=str(csv_path), output_dir=str(out), seed=42, split_mode="official")
+
+        assignments = pd.read_csv(out / "assignments.csv")
+        merged = pd.DataFrame(rows).merge(assignments, on="sample_id")
+        train_p = set(merged[merged["split"] == "train"]["project"])
+        val_p = set(merged[merged["split"] == "val"]["project"])
+        # ProjectX should be in both (official mode doesn't dejoin)
+        assert "ProjectX" in train_p
+        assert "ProjectX" in val_p
+
+    def test_project_disjoint_mode_removes_overlap(self, tmp_path):
+        """Project disjoint mode ensures no project appears in multiple splits."""
+        rows = []
+        sample_id = 0
+        for split in ["train", "val"]:
+            for i in range(30):
+                rows.append({
+                    "sample_id": sample_id, "project": "ProjectX",
+                    "source_split": split, "func_before": f"px-{split}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 5 else 0,
+                })
+                sample_id += 1
+        for proj_idx in range(15):
+            for i in range(8):
+                rows.append({
+                    "sample_id": sample_id, "project": f"T{proj_idx}",
+                    "source_split": "train", "func_before": f"train-{proj_idx}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+        for proj_idx in range(10):
+            for i in range(8):
+                rows.append({
+                    "sample_id": sample_id, "project": f"V{proj_idx}",
+                    "source_split": "val", "func_before": f"val-{proj_idx}-{i}",
+                    "cwe_id": "CWE-125", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+        for proj_idx in range(10):
+            for i in range(8):
+                rows.append({
+                    "sample_id": sample_id, "project": f"S{proj_idx}",
+                    "source_split": "test", "func_before": f"test-{proj_idx}-{i}",
+                    "cwe_id": "CWE-476", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+
+        csv_path = tmp_path / "data.csv"
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+        out = tmp_path / "splits"
+        split_data(input_csv=str(csv_path), output_dir=str(out), seed=42, split_mode="project_disjoint")
+
+        assignments = pd.read_csv(out / "assignments.csv")
+        merged = pd.DataFrame(rows).merge(assignments, on="sample_id")
+
+        from itertools import combinations as combs
+        for s1, s2 in combs(["train", "val", "test"], 2):
+            p1 = set(merged[merged["split"] == s1]["project"])
+            p2 = set(merged[merged["split"] == s2]["project"])
+            assert p1 & p2 == set(), f"Overlap between {s1} and {s2}: {p1 & p2}"
+
+    def test_default_mode_is_project_disjoint(self, tmp_path):
+        """split_data() without split_mode should default to project_disjoint."""
+        rows = []
+        sample_id = 0
+        for split in ["train", "val"]:
+            for i in range(30):
+                rows.append({
+                    "sample_id": sample_id, "project": "SharedProj",
+                    "source_split": split, "func_before": f"sp-{split}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 5 else 0,
+                })
+                sample_id += 1
+        for proj_idx in range(15):
+            for i in range(8):
+                rows.append({
+                    "sample_id": sample_id, "project": f"T{proj_idx}",
+                    "source_split": "train", "func_before": f"t-{proj_idx}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+        for proj_idx in range(10):
+            for i in range(8):
+                rows.append({
+                    "sample_id": sample_id, "project": f"V{proj_idx}",
+                    "source_split": "val", "func_before": f"v-{proj_idx}-{i}",
+                    "cwe_id": "CWE-125", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+        for proj_idx in range(10):
+            for i in range(8):
+                rows.append({
+                    "sample_id": sample_id, "project": f"S{proj_idx}",
+                    "source_split": "test", "func_before": f"test-{proj_idx}-{i}",
+                    "cwe_id": "CWE-476", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+
+        csv_path = tmp_path / "data.csv"
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+        out = tmp_path / "splits"
+        split_data(input_csv=str(csv_path), output_dir=str(out), seed=42)
+
+        assignments = pd.read_csv(out / "assignments.csv")
+        merged = pd.DataFrame(rows).merge(assignments, on="sample_id")
+
+        from itertools import combinations as combs
+        for s1, s2 in combs(["train", "val", "test"], 2):
+            p1 = set(merged[merged["split"] == s1]["project"])
+            p2 = set(merged[merged["split"] == s2]["project"])
+            assert p1 & p2 == set(), f"Default mode has overlap between {s1}/{s2}: {p1 & p2}"
+
+    def test_report_includes_split_mode(self, tmp_path):
+        rows = []
+        sample_id = 0
+        for proj_idx in range(10):
+            for i in range(10):
+                rows.append({
+                    "sample_id": sample_id, "project": f"P{proj_idx}",
+                    "source_split": "train" if proj_idx < 6 else ("val" if proj_idx < 8 else "test"),
+                    "func_before": f"f-{proj_idx}-{i}",
+                    "cwe_id": "CWE-119", "vul": 1 if i < 2 else 0,
+                })
+                sample_id += 1
+
+        csv_path = tmp_path / "data.csv"
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+        for mode in ["official", "project_disjoint"]:
+            out = tmp_path / f"splits_{mode}"
+            split_data(input_csv=str(csv_path), output_dir=str(out), seed=42, split_mode=mode)
+            report = (out / "split_report.md").read_text()
+            assert mode in report, f"Report should mention mode '{mode}'"
