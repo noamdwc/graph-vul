@@ -91,6 +91,81 @@ def _materialize_official_split_assignments(df: pd.DataFrame) -> pd.DataFrame:
     return normalized[["sample_id", "split"]]
 
 
+def _dejoin_official_splits(
+    df: pd.DataFrame,
+    seed: int,
+    val_frac: float = VAL_SPLIT,
+    test_frac: float = TEST_SPLIT,
+) -> pd.DataFrame:
+    """Enforce project disjointness on official source splits.
+
+    1. Anchor single-split projects (projects appearing in exactly one source_split).
+    2. Pool multi-split projects for reallocation via the greedy allocator.
+    3. Feed deficit-adjusted targets to _greedy_project_split.
+    4. Merge anchored + reallocated assignments.
+    """
+    if "source_split" not in df.columns:
+        raise ValueError("Dejoin mode requires a source_split column")
+
+    split_map = {"train": "train", "validation": "val", "val": "val", "test": "test"}
+    df = df.copy()
+    df["_norm_split"] = df["source_split"].astype(str).str.lower().map(split_map)
+    if df["_norm_split"].isna().any():
+        bad = sorted(df.loc[df["_norm_split"].isna(), "source_split"].astype(str).unique())
+        raise ValueError(f"Unsupported official split labels: {bad}")
+
+    # Classify projects: single-split vs multi-split
+    project_splits = df.groupby("project")["_norm_split"].apply(lambda x: set(x.unique()))
+    single_split_projects = {p for p, splits in project_splits.items() if len(splits) == 1}
+    multi_split_projects = {p for p, splits in project_splits.items() if len(splits) > 1}
+
+    logger.info(
+        "Dejoin: %d single-split projects (anchored), %d multi-split projects (to reallocate)",
+        len(single_split_projects), len(multi_split_projects),
+    )
+
+    # Anchor single-split projects
+    anchored_mask = df["project"].isin(single_split_projects)
+    anchored_assignments = df.loc[anchored_mask, ["sample_id", "_norm_split"]].rename(
+        columns={"_norm_split": "split"}
+    )
+
+    # Compute deficit targets for the greedy allocator
+    total_rows = len(df)
+    train_frac = 1.0 - val_frac - test_frac
+    global_targets = {
+        "train": total_rows * train_frac,
+        "val": total_rows * val_frac,
+        "test": total_rows * test_frac,
+    }
+    anchored_counts = anchored_assignments["split"].value_counts().to_dict()
+    deficit = {
+        split: max(global_targets[split] - anchored_counts.get(split, 0), 0.0)
+        for split in ["train", "val", "test"]
+    }
+    deficit_total = sum(deficit.values())
+    if deficit_total == 0:
+        deficit = {"train": train_frac, "val": val_frac, "test": test_frac}
+        deficit_total = 1.0
+    deficit_fracs = {split: d / deficit_total for split, d in deficit.items()}
+
+    # Reallocate multi-split projects using the greedy allocator
+    df_multi = df[df["project"].isin(multi_split_projects)].copy()
+    major_cwes = _select_major_cwes(df_multi)
+    project_stats = _build_project_stats(df_multi, major_cwes=major_cwes)
+    project_to_split = _greedy_project_split(
+        project_stats,
+        split_fracs=deficit_fracs,
+        seed=seed,
+    )
+    reallocated_assignments = _expand_project_assignments(df_multi, project_to_split)
+
+    # Merge anchored + reallocated
+    combined = pd.concat([anchored_assignments, reallocated_assignments], ignore_index=True)
+    df.drop(columns=["_norm_split"], inplace=True)
+    return combined[["sample_id", "split"]]
+
+
 def _derive_unseen_official_assignments(
     df: pd.DataFrame,
     primary_assignments: pd.DataFrame,
