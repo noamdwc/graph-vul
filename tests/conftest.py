@@ -149,3 +149,47 @@ def multi_cwe_subset_df():
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
     df.insert(0, "sample_id", range(len(df)))
     return df
+
+
+@pytest.fixture
+def official_split_df_with_overlap():
+    """Dataset with source_split column where some projects span multiple splits.
+
+    Layout:
+    - ProjectA: train only (80 rows)
+    - ProjectB: val only (40 rows)
+    - ProjectC: test only (40 rows)
+    - ProjectD: train + val (60 train, 20 val) — multi-split
+    - ProjectE: train + test (50 train, 15 test) — multi-split
+    - ProjectF: train + val + test (40 train, 15 val, 10 test) — multi-split
+    - ProjectG: val + test (20 val, 20 test) — multi-split
+    """
+    rng = np.random.RandomState(99)
+    rows = []
+
+    project_layout = [
+        ("ProjectA", [("train", 80)]),
+        ("ProjectB", [("val", 40)]),
+        ("ProjectC", [("test", 40)]),
+        ("ProjectD", [("train", 60), ("val", 20)]),
+        ("ProjectE", [("train", 50), ("test", 15)]),
+        ("ProjectF", [("train", 40), ("val", 15), ("test", 10)]),
+        ("ProjectG", [("val", 20), ("test", 20)]),
+    ]
+
+    sample_id = 0
+    for project, split_counts in project_layout:
+        for source_split, count in split_counts:
+            for i in range(count):
+                token_count = rng.randint(10, 400)
+                rows.append({
+                    "sample_id": sample_id,
+                    "project": project,
+                    "source_split": source_split,
+                    "func_before": "t " * token_count,
+                    "cwe_id": rng.choice(["CWE-119", "CWE-125", "CWE-476"]),
+                    "vul": 1 if i < max(count // 5, 2) else 0,
+                })
+                sample_id += 1
+
+    return pd.DataFrame(rows)
