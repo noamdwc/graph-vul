@@ -157,6 +157,7 @@ def _dejoin_official_splits(
         project_stats,
         split_fracs=deficit_fracs,
         seed=seed,
+        allow_empty_splits=True,
     )
     reallocated_assignments = _expand_project_assignments(df_multi, project_to_split)
 
@@ -352,6 +353,7 @@ def _greedy_project_split(
     split_fracs: dict[str, float],
     seed: int,
     project_count_targets: dict[str, int] | None = None,
+    allow_empty_splits: bool = False,
 ) -> dict[str, str]:
     """Assign projects to splits greedily, optimizing for row targets first."""
     splits = list(split_fracs.keys())
@@ -491,7 +493,7 @@ def _greedy_project_split(
 
         for split in splits:
             empties_after = len(empty_splits) - (1 if state[split]["rows"] == 0 else 0)
-            if remaining_projects < empties_after:
+            if not allow_empty_splits and remaining_projects < empties_after:
                 continue
 
             new_rows = state[split]["rows"] + project_rows
@@ -1303,6 +1305,7 @@ def split_data(
     input_csv: str = str(SUBSET_CSV),
     output_dir: str = str(SPLITS_DIR),
     seed: int = SEED,
+    split_mode: str = "project_disjoint",
 ) -> None:
     df = pd.read_csv(input_csv)
     official_split_mode = "source_split" in df.columns and df["source_split"].notna().any()
@@ -1339,8 +1342,16 @@ def split_data(
     # Build seen/unseen pools using full-project holdout
     migration_info: dict[str, list[str]] = {}
     if official_split_mode:
-        df_seen = df.copy()
-        df_unseen = pd.DataFrame(columns=df.columns)
+        if split_mode == "project_disjoint":
+            df_seen = df.copy()
+            df_unseen = pd.DataFrame(columns=df.columns)
+            assignments = _dejoin_official_splits(df_seen, seed)
+            derived_unseen_assignments = _derive_unseen_official_assignments(df_seen, assignments)
+        else:
+            df_seen = df.copy()
+            df_unseen = pd.DataFrame(columns=df.columns)
+            assignments = _materialize_official_split_assignments(df_seen)
+            derived_unseen_assignments = _derive_unseen_official_assignments(df_seen, assignments)
     elif has_cwe and HELDOUT_CWE_IDS:
         df_seen, df_unseen, migration_info = _build_unseen_pool(df, HELDOUT_CWE_IDS)
         logger.info(
@@ -1354,15 +1365,10 @@ def split_data(
                 "Projects migrated to unseen: %s",
                 ", ".join(f"{p} (due to {', '.join(cwes)})" for p, cwes in sorted(migration_info.items())),
             )
+        assignments = _assign_splits(df_seen, seed)
     else:
         df_seen = df.copy()
         df_unseen = pd.DataFrame(columns=df.columns)
-
-    # Assign seen splits (stratified by label, grouped by project)
-    if official_split_mode:
-        assignments = _materialize_official_split_assignments(df_seen)
-        derived_unseen_assignments = _derive_unseen_official_assignments(df_seen, assignments)
-    else:
         assignments = _assign_splits(df_seen, seed)
 
     # Assign unseen splits
@@ -1372,12 +1378,13 @@ def split_data(
 
     # Validate all splits
     df_all = pd.concat([df_seen, df_unseen], ignore_index=True) if len(df_unseen) > 0 else df_seen
-    _enforce_min_split_sizes(
-        df_seen,
-        assignments[assignments["split"].isin(["train", "val", "test"])].copy(),
-        min_rows=MIN_SPLIT_ROWS,
-        min_frac=MIN_SPLIT_FRAC,
-    )
+    if not official_split_mode:
+        _enforce_min_split_sizes(
+            df_seen,
+            assignments[assignments["split"].isin(["train", "val", "test"])].copy(),
+            min_rows=MIN_SPLIT_ROWS,
+            min_frac=MIN_SPLIT_FRAC,
+        )
     expected_splits = ["train", "val", "test"] if official_split_mode else ALL_SPLITS
     warnings = _validate_splits(
         df_all,
@@ -1451,7 +1458,10 @@ def split_data(
             logger.info("Wrote unseen audit CSV to %s", audit_path)
 
     # Generate report
-    report_mode = "official_source_split" if official_split_mode else "derived_group_split"
+    if official_split_mode:
+        report_mode = split_mode if split_mode == "project_disjoint" else "official"
+    else:
+        report_mode = "derived_group_split"
     report = _generate_split_report(
         df_all,
         assignments,
@@ -1478,7 +1488,14 @@ if __name__ == "__main__":
     parser.add_argument("--input", type=str, default=str(SUBSET_CSV))
     parser.add_argument("--output", type=str, default=str(SPLITS_DIR))
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument(
+        "--split-mode",
+        type=str,
+        choices=["project_disjoint", "official"],
+        default="project_disjoint",
+        help="Split strategy: 'project_disjoint' (default) enforces no project overlap; 'official' uses PrimeVul source splits as-is",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    split_data(input_csv=args.input, output_dir=args.output, seed=args.seed)
+    split_data(input_csv=args.input, output_dir=args.output, seed=args.seed, split_mode=args.split_mode)
