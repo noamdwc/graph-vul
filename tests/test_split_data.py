@@ -13,6 +13,7 @@ from graph_vul.pipeline.split_data import (
     _assign_unseen_splits,
     _build_unseen_pool,
     _compute_sample_weights,
+    _dejoin_official_splits,
     _derive_unseen_official_assignments,
     _enforce_min_split_sizes,
     _materialize_official_split_assignments,
@@ -342,6 +343,56 @@ class TestOfficialSplitAssignments:
         })
         with pytest.raises(ValueError, match="Split size validation failed"):
             _enforce_min_split_sizes(df, assignments, min_rows=25, min_frac=0.15)
+
+
+class TestDejoinOfficialSplits:
+    def test_returns_project_disjoint_assignments(self, official_split_df_with_overlap):
+        df = official_split_df_with_overlap
+        assignments = _dejoin_official_splits(df, seed=42)
+
+        merged = df.merge(assignments, on="sample_id")
+        train_p = set(merged[merged["split"] == "train"]["project"])
+        val_p = set(merged[merged["split"] == "val"]["project"])
+        test_p = set(merged[merged["split"] == "test"]["project"])
+
+        assert train_p & val_p == set(), f"train/val overlap: {train_p & val_p}"
+        assert train_p & test_p == set(), f"train/test overlap: {train_p & test_p}"
+        assert val_p & test_p == set(), f"val/test overlap: {val_p & test_p}"
+
+    def test_all_rows_assigned(self, official_split_df_with_overlap):
+        df = official_split_df_with_overlap
+        assignments = _dejoin_official_splits(df, seed=42)
+        assert len(assignments) == len(df)
+        assert set(assignments.columns) == {"sample_id", "split"}
+
+    def test_single_split_projects_keep_assignment(self, official_split_df_with_overlap):
+        df = official_split_df_with_overlap
+        assignments = _dejoin_official_splits(df, seed=42)
+        merged = df.merge(assignments, on="sample_id")
+
+        # ProjectA is train-only, ProjectB is val-only, ProjectC is test-only
+        for proj, expected_split in [("ProjectA", "train"), ("ProjectB", "val"), ("ProjectC", "test")]:
+            proj_splits = merged.loc[merged["project"] == proj, "split"].unique()
+            assert list(proj_splits) == [expected_split], (
+                f"Single-split {proj} should stay in {expected_split}, got {proj_splits}"
+            )
+
+    def test_deterministic(self, official_split_df_with_overlap):
+        df = official_split_df_with_overlap
+        a1 = _dejoin_official_splits(df, seed=42)
+        a2 = _dejoin_official_splits(df, seed=42)
+        pd.testing.assert_frame_equal(a1, a2)
+
+    def test_all_three_splits_present(self, official_split_df_with_overlap):
+        df = official_split_df_with_overlap
+        assignments = _dejoin_official_splits(df, seed=42)
+        assert set(assignments["split"].unique()) == {"train", "val", "test"}
+
+    def test_eval_splits_not_empty(self, official_split_df_with_overlap):
+        df = official_split_df_with_overlap
+        assignments = _dejoin_official_splits(df, seed=42)
+        for split in ["val", "test"]:
+            assert (assignments["split"] == split).sum() > 0, f"{split} is empty"
 
 
 class TestComputeSampleWeights:
