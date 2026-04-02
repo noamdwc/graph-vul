@@ -324,7 +324,7 @@ class TestOfficialSplitAssignments:
 
         pd.DataFrame(rows).to_csv(subset_csv, index=False)
 
-        split_data(input_csv=str(subset_csv), output_dir=str(out_dir), seed=42)
+        split_data(input_csv=str(subset_csv), output_dir=str(out_dir), seed=42, split_mode="official")
 
         derived_path = out_dir / DERIVED_UNSEEN_ASSIGNMENTS_FILENAME
         assert derived_path.exists()
@@ -772,13 +772,13 @@ class TestSplitModeArgument:
     def test_report_includes_split_mode(self, tmp_path):
         rows = []
         sample_id = 0
-        for proj_idx in range(10):
-            for i in range(10):
+        for proj_idx in range(20):
+            for i in range(20):
                 rows.append({
                     "sample_id": sample_id, "project": f"P{proj_idx}",
-                    "source_split": "train" if proj_idx < 6 else ("val" if proj_idx < 8 else "test"),
+                    "source_split": "train" if proj_idx < 12 else ("val" if proj_idx < 16 else "test"),
                     "func_before": f"f-{proj_idx}-{i}",
-                    "cwe_id": "CWE-119", "vul": 1 if i < 2 else 0,
+                    "cwe_id": "CWE-119", "vul": 1 if i < 4 else 0,
                 })
                 sample_id += 1
 

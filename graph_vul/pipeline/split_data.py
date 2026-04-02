@@ -1413,24 +1413,47 @@ def split_data(
 
     # Validate held-out CWE eligibility
     has_cwe = "cwe_id" in df.columns
-    if not official_split_mode and has_cwe and HELDOUT_CWE_IDS:
-        _validate_heldout_eligibility(df, HELDOUT_CWE_IDS)
+    # Only attempt held-out CWE splitting if the data actually contains them
+    present_heldout = (
+        [c for c in HELDOUT_CWE_IDS if c in set(df["cwe_id"].dropna().unique())]
+        if has_cwe and HELDOUT_CWE_IDS else []
+    )
+    use_heldout = bool(present_heldout)
+    if use_heldout and (not official_split_mode or split_mode == "project_disjoint"):
+        _validate_heldout_eligibility(df, present_heldout)
 
     # Build seen/unseen pools using full-project holdout
     migration_info: dict[str, list[str]] = {}
-    if official_split_mode:
-        if split_mode == "project_disjoint":
-            df_seen = df.copy()
-            df_unseen = pd.DataFrame(columns=df.columns)
-            assignments = _dejoin_official_splits(df_seen, seed)
-            derived_unseen_assignments = _derive_unseen_official_assignments(df_seen, assignments)
+    if official_split_mode and split_mode == "project_disjoint":
+        # Project-disjoint mode: explicit held-out CWE pool, then dejoin seen pool
+        if use_heldout:
+            df_seen, df_unseen, migration_info = _build_unseen_pool(df, present_heldout)
+            logger.info(
+                "Full-project holdout: %d projects (%d rows) moved to unseen pool, "
+                "%d projects (%d rows) in seen pool",
+                df_unseen["project"].nunique(), len(df_unseen),
+                df_seen["project"].nunique(), len(df_seen),
+            )
+            if migration_info:
+                logger.info(
+                    "Projects migrated to unseen: %s",
+                    ", ".join(f"{p} (due to {', '.join(cwes)})" for p, cwes in sorted(migration_info.items())),
+                )
         else:
             df_seen = df.copy()
             df_unseen = pd.DataFrame(columns=df.columns)
-            assignments = _materialize_official_split_assignments(df_seen)
-            derived_unseen_assignments = _derive_unseen_official_assignments(df_seen, assignments)
-    elif has_cwe and HELDOUT_CWE_IDS:
-        df_seen, df_unseen, migration_info = _build_unseen_pool(df, HELDOUT_CWE_IDS)
+        assignments = _dejoin_official_splits(df_seen, seed)
+        if len(df_unseen) > 0:
+            unseen_assignments = _assign_unseen_splits(df_unseen, seed)
+            assignments = pd.concat([assignments, unseen_assignments], ignore_index=True)
+    elif official_split_mode:
+        # Official mode: passthrough source splits, derive unseen from leftover CWEs
+        df_seen = df.copy()
+        df_unseen = pd.DataFrame(columns=df.columns)
+        assignments = _materialize_official_split_assignments(df_seen)
+        derived_unseen_assignments = _derive_unseen_official_assignments(df_seen, assignments)
+    elif use_heldout:
+        df_seen, df_unseen, migration_info = _build_unseen_pool(df, present_heldout)
         logger.info(
             "Full-project holdout: %d projects (%d rows) moved to unseen pool, "
             "%d projects (%d rows) in seen pool",
@@ -1443,34 +1466,34 @@ def split_data(
                 ", ".join(f"{p} (due to {', '.join(cwes)})" for p, cwes in sorted(migration_info.items())),
             )
         assignments = _assign_splits(df_seen, seed)
+        if len(df_unseen) > 0:
+            unseen_assignments = _assign_unseen_splits(df_unseen, seed)
+            assignments = pd.concat([assignments, unseen_assignments], ignore_index=True)
     else:
         df_seen = df.copy()
         df_unseen = pd.DataFrame(columns=df.columns)
         assignments = _assign_splits(df_seen, seed)
 
-    # Assign unseen splits
-    if not official_split_mode and len(df_unseen) > 0:
-        unseen_assignments = _assign_unseen_splits(df_unseen, seed)
-        assignments = pd.concat([assignments, unseen_assignments], ignore_index=True)
-
     # Validate all splits
     df_all = pd.concat([df_seen, df_unseen], ignore_index=True) if len(df_unseen) > 0 else df_seen
-    if not official_split_mode:
+    is_official_passthrough = official_split_mode and split_mode != "project_disjoint"
+    if not is_official_passthrough:
         _enforce_min_split_sizes(
             df_seen,
             assignments[assignments["split"].isin(["train", "val", "test"])].copy(),
             min_rows=MIN_SPLIT_ROWS,
             min_frac=MIN_SPLIT_FRAC,
         )
-    expected_splits = ["train", "val", "test"] if official_split_mode else ALL_SPLITS
+    expected_splits = ["train", "val", "test"] if is_official_passthrough else ALL_SPLITS
+    heldout_for_validation = None if is_official_passthrough else (present_heldout if use_heldout else None)
     warnings = _validate_splits(
         df_all,
         assignments,
-        heldout_cwe_ids=None if official_split_mode else (HELDOUT_CWE_IDS if has_cwe else None),
+        heldout_cwe_ids=heldout_for_validation,
         expected_splits=expected_splits,
     )
     warnings.extend(_validate_short_bucket_coverage(df_all, assignments))
-    if official_split_mode:
+    if is_official_passthrough:
         warnings.append("Official split mode active: unseen_val and unseen_test are derived from val/test CWEs absent from train")
         warnings.extend(_validate_derived_unseen_assignments(df_all, derived_unseen_assignments))
     for w in warnings:
@@ -1483,7 +1506,7 @@ def split_data(
     assignments_path = out / "assignments.csv"
     assignments.to_csv(assignments_path, index=False)
     logger.info("Wrote split assignments to %s", assignments_path)
-    if official_split_mode:
+    if is_official_passthrough:
         derived_path = out / DERIVED_UNSEEN_ASSIGNMENTS_FILENAME
         derived_unseen_assignments.to_csv(derived_path, index=False)
         logger.info("Wrote derived unseen assignments to %s", derived_path)
@@ -1504,7 +1527,7 @@ def split_data(
         logger.info("Wrote balanced training manifest to %s", manifest_path)
 
     # Generate unseen audit CSV
-    if not official_split_mode and len(df_unseen) > 0:
+    if not is_official_passthrough and len(df_unseen) > 0:
         unseen_merged = df_unseen.merge(assignments, on="sample_id")
         audit_rows = []
         for split_name in ["unseen_val", "unseen_test"]:
@@ -1546,7 +1569,7 @@ def split_data(
         migration_info,
         weights_df,
         mode=report_mode,
-        derived_unseen_assignments=derived_unseen_assignments if official_split_mode else None,
+        derived_unseen_assignments=derived_unseen_assignments if is_official_passthrough else None,
     )
     report_path = out / "split_report.md"
     with open(report_path, "w") as f:
