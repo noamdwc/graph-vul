@@ -153,6 +153,11 @@ def _drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
     for col in required_nonnull:
         cleaned = cleaned[cleaned[col].notna()]
 
+    # Strip \r from string columns — trailing \r breaks CSV round-trips
+    # when QUOTE_ALL is used (the \r\n sequence is parsed as a row delimiter).
+    for col in cleaned.select_dtypes(include="object").columns:
+        cleaned[col] = cleaned[col].str.replace("\r", "", regex=False)
+
     cleaned["sample_id"] = cleaned["sample_id"].astype(int)
     cleaned["vul"] = cleaned["vul"].astype(int)
     return cleaned.reset_index(drop=True)
