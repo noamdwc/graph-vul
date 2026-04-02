@@ -1,5 +1,6 @@
 """Extract a normalized PrimeVul-backed function subset for fine-tuning."""
 
+import csv
 import hashlib
 import json
 import logging
@@ -139,6 +140,22 @@ def _filter_token_length(df: pd.DataFrame) -> pd.DataFrame:
 def _select_labeled_rows(df: pd.DataFrame) -> pd.DataFrame:
     labeled_mask = df["cwe_id"].notna() & df["cwe_id"].astype(str).str.strip().ne("")
     return df[labeled_mask].copy()
+
+
+def _drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows missing required fields before persisting the normalized subset."""
+    required_nonempty = ("project", "func_before", "cwe_id", "source_split")
+    required_nonnull = ("sample_id", "vul")
+
+    cleaned = df.copy()
+    for col in required_nonempty:
+        cleaned = cleaned[cleaned[col].notna() & cleaned[col].astype(str).str.strip().ne("")]
+    for col in required_nonnull:
+        cleaned = cleaned[cleaned[col].notna()]
+
+    cleaned["sample_id"] = cleaned["sample_id"].astype(int)
+    cleaned["vul"] = cleaned["vul"].astype(int)
+    return cleaned.reset_index(drop=True)
 
 
 def _summarize_token_lengths(subset: pd.DataFrame) -> dict:
@@ -416,12 +433,22 @@ def extract_func_subset(
     ]
     keep_cols = [c for c in keep_cols if c in subset.columns]
     subset = subset[keep_cols].copy()
+    pre_write_subset = subset
+    subset = _drop_invalid_rows(subset)
+    stage_summaries.append(_make_stage_summary("drop_invalid_rows", pre_write_subset, subset))
+    if len(pre_write_subset) > len(subset):
+        logger.warning(
+            "Dropped %d invalid rows before writing %s",
+            len(pre_write_subset) - len(subset),
+            dst,
+        )
+    subset_with_meta = subset_with_meta.merge(subset[["sample_id"]], on="sample_id", how="inner")
 
     # Write outputs
-    subset.to_csv(dst, index=False)
+    subset.to_csv(dst, index=False, quoting=csv.QUOTE_ALL)
     logger.info(
         "Wrote %d functions (%d vul, %d benign) to %s",
-        len(subset), achieved_vul, achieved_benign, dst,
+        len(subset), int((subset["vul"] == 1).sum()), int((subset["vul"] == 0).sum()), dst,
     )
 
     config_dict = {

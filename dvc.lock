@@ -181,21 +181,21 @@ stages:
       size: 3767
     - path: graph_vul/pipeline/func_extract_subset.py
       hash: md5
-      md5: 01bff64a541428d94a552b30f060e092
-      size: 16603
+      md5: ed8b3af092e2a8ce694dec344bbcb93c
+      size: 17787
     outs:
     - path: data/func_subset.csv
       hash: md5
-      md5: 7af2f4adf9f6e059ec9e7716698ac861
-      size: 143371717
+      md5: 28e86e9e8028f24c3d550dfda34a9ce8
+      size: 145512083
     - path: data/func_subset_manifest.json
       hash: md5
-      md5: 47f4f4a81ef90b06973125fbd4baf11b
-      size: 43504
+      md5: 540947790ef800f218f93b34095d3e04
+      size: 43699
     - path: data/func_subset_report.md
       hash: md5
-      md5: 4bffcfb2d188cddc1f7d7cd1a43f7525
-      size: 20464
+      md5: bb5f9dd0435ea652c3ad19a7faa45616
+      size: 20520
   func_embed:
     cmd: python -m graph_vul.pipeline.embed_functions
     deps:
@@ -219,21 +219,21 @@ stages:
       nfiles: 34309
   func_split:
     cmd: python -m graph_vul.pipeline.split_data --input data/func_subset.csv 
-      --output data/func_splits
+      --output data/func_splits --split-mode project_disjoint
     deps:
     - path: data/func_subset.csv
       hash: md5
-      md5: 7af2f4adf9f6e059ec9e7716698ac861
-      size: 143371717
+      md5: 28e86e9e8028f24c3d550dfda34a9ce8
+      size: 145512083
     - path: graph_vul/pipeline/split_data.py
       hash: md5
-      md5: a896e9ae132a69b60788ad23c4477c56
-      size: 60105
+      md5: 2d56915c7043a914b6601dd79f35aa82
+      size: 64158
     outs:
     - path: data/func_splits
       hash: md5
-      md5: 3c90bc7352459291c8112a8d5976bd8b.dir
-      size: 12364566
+      md5: 84b430a2264ec14411ccca4f54100a09.dir
+      size: 11771114
       nfiles: 5
   func_train:
     cmd: python -m graph_vul.train_baseline --epochs 50 --batch-size 64 --lr 
