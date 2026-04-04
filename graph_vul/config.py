@@ -62,6 +62,9 @@ MIN_HELDOUT_PROJECTS = 2
 # Unseen split ratio
 UNSEEN_VAL_FRAC = 0.5
 
+# Function length partition threshold
+SHORT_FUNCTION_MAX_TOKENS = 64
+
 # Fixed token-count bucket boundaries for evaluation
 TOKEN_BUCKET_EDGES = [0, 64, 128, 256, 512]
 TOKEN_BUCKET_LABELS = ["0-64", "64-128", "128-256", "256-512", "512+"]

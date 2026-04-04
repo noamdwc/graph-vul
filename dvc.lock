@@ -181,13 +181,13 @@ stages:
       size: 3767
     - path: graph_vul/pipeline/func_extract_subset.py
       hash: md5
-      md5: ed8b3af092e2a8ce694dec344bbcb93c
-      size: 17787
+      md5: 855aeda7d2b5509a2b80a1385122b915
+      size: 18076
     outs:
     - path: data/func_subset.csv
       hash: md5
-      md5: 28e86e9e8028f24c3d550dfda34a9ce8
-      size: 145512083
+      md5: 74435873c3a77afb3fba5464d96dc7e2
+      size: 145492471
     - path: data/func_subset_manifest.json
       hash: md5
       md5: 540947790ef800f218f93b34095d3e04
@@ -223,8 +223,8 @@ stages:
     deps:
     - path: data/func_subset.csv
       hash: md5
-      md5: 28e86e9e8028f24c3d550dfda34a9ce8
-      size: 145512083
+      md5: 74435873c3a77afb3fba5464d96dc7e2
+      size: 145492471
     - path: graph_vul/pipeline/split_data.py
       hash: md5
       md5: a1249504c0815e51d88190d95c414e4d
@@ -232,7 +232,7 @@ stages:
     outs:
     - path: data/func_splits
       hash: md5
-      md5: 944cda12ac4dac5e167dcbe692138802.dir
+      md5: 510e39be56ca912488235d5d3caf1c6a.dir
       size: 6699358
       nfiles: 5
   func_train:
@@ -350,43 +350,43 @@ stages:
     deps:
     - path: data/func_finetune_model.ckpt
       hash: md5
-      md5: 1176d337e32cc6d8df9c33a6aecd1f22
-      size: 1509053745
+      md5: 8a882c8dce7da6f1a26df4a04fab598a
+      size: 1509054065
     - path: data/func_splits
       hash: md5
-      md5: 0cd501f443319672ee1ef71df6da4703.dir
-      size: 3861672
+      md5: 510e39be56ca912488235d5d3caf1c6a.dir
+      size: 6699358
       nfiles: 5
     - path: data/func_subset.csv
       hash: md5
-      md5: 4f08bfe20f5c8e1ad79140990706f719
-      size: 64858657
+      md5: 74435873c3a77afb3fba5464d96dc7e2
+      size: 145492471
     - path: data/processed/cwe_embeddings
       hash: md5
-      md5: 846ea68e28fdf68ed75e61545119eb4b.dir
-      size: 282225
-      nfiles: 91
+      md5: 7d9d4fb5002ea7228dd0e8804617d374.dir
+      size: 453396
+      nfiles: 146
     - path: graph_vul/dataset/func_finetune_dataset.py
       hash: md5
-      md5: 7609d52d9b5aba836efa58826a506709
-      size: 5294
+      md5: 8c331196350fb41d0ebd8f555a10196a
+      size: 6390
     - path: graph_vul/export_finetune_predictions.py
       hash: md5
-      md5: 51574f40b2adf095e060b69536672953
-      size: 7800
+      md5: 0766c5c6727487b149debfe4578d6fac
+      size: 8319
     - path: graph_vul/model/func_finetune_lit_module.py
       hash: md5
-      md5: 27ed948de344a53471c02b9e19b89a50
-      size: 9835
+      md5: 7283ec5a82a80c98c1a60484d31b6f97
+      size: 11712
     - path: graph_vul/model/func_finetune_model.py
       hash: md5
-      md5: 2ce8e00d6f4daf6dbe31d72872121241
-      size: 3118
+      md5: 27e16682e33f40bf99d28cea5ca46462
+      size: 6010
     outs:
     - path: data/analysis/func_finetune_predictions
       hash: md5
-      md5: 72b7c02986528b9390b2225e3e43dbba.dir
-      size: 41573528
+      md5: ef62e741c2e6aa27bcc04a27fd976ed8.dir
+      size: 101536360
       nfiles: 5
   post_experiment_analysis:
     cmd: jupyter nbconvert --to pdf --execute --output-dir outputs 
@@ -394,8 +394,8 @@ stages:
     deps:
     - path: data/analysis/func_finetune_predictions
       hash: md5
-      md5: 72b7c02986528b9390b2225e3e43dbba.dir
-      size: 41573528
+      md5: ef62e741c2e6aa27bcc04a27fd976ed8.dir
+      size: 101536360
       nfiles: 5
     - path: notebooks/post_experiment_analysis.ipynb
       hash: md5
@@ -404,8 +404,8 @@ stages:
     outs:
     - path: outputs/post_experiment_analysis.pdf
       hash: md5
-      md5: 9a28ce96ebbc9acf8ab783e70beb208f
-      size: 605873
+      md5: d9f3e4f87719a8a7aef767a1205aca79
+      size: 642111
   extract_graphs:
     cmd: python -m graph_vul.pipeline.extract_graphs
     deps:
@@ -432,3 +432,29 @@ stages:
       md5: 073a773617dc0ecd31e1720dd3979163.dir
       size: 22915036
       nfiles: 1735
+  eval_external_tier1:
+    cmd: python -m graph_vul.eval_external
+    deps:
+    - path: data/func_finetune_model.ckpt
+      hash: md5
+      md5: 8a882c8dce7da6f1a26df4a04fab598a
+      size: 1509054065
+    - path: data/processed/cwe_embeddings
+      hash: md5
+      md5: 7d9d4fb5002ea7228dd0e8804617d374.dir
+      size: 453396
+      nfiles: 146
+    - path: graph_vul/dataset/external_datasets.py
+      hash: md5
+      md5: b85bb9183be87089c950a19902d54e32
+      size: 5804
+    - path: graph_vul/eval_external.py
+      hash: md5
+      md5: 7e315dad4500f9b60555ba839de796d1
+      size: 9657
+    outs:
+    - path: data/analysis/external_eval_tier1
+      hash: md5
+      md5: 28a448dd13d8145f867a66091698caa9.dir
+      size: 28540165
+      nfiles: 4

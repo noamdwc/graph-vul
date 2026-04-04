@@ -790,3 +790,34 @@ class TestSplitModeArgument:
             split_data(input_csv=str(csv_path), output_dir=str(out), seed=42, split_mode=mode)
             report = (out / "split_report.md").read_text()
             assert mode in report, f"Report should mention mode '{mode}'"
+
+
+class TestSplitDataNoHeldoutCWEs:
+    """split_data should produce train/val/test only when no held-out CWEs exist."""
+
+    def test_no_heldout_cwes_produces_three_splits(self, tmp_path):
+        rows = []
+        sample_id = 0
+        # Only seen CWEs (CWE-119, CWE-125), many projects for stratification
+        for proj_idx in range(10):
+            for i in range(40):
+                rows.append({
+                    "sample_id": sample_id,
+                    "project": f"Proj{proj_idx}",
+                    "func_before": " ".join(f"t{j}" for j in range(30 + i)),
+                    "cwe_id": "CWE-119" if i % 2 == 0 else "CWE-125",
+                    "vul": 1 if i < 10 else 0,
+                })
+                sample_id += 1
+
+        csv_path = tmp_path / "data.csv"
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+        out = tmp_path / "splits"
+        split_data(input_csv=str(csv_path), output_dir=str(out), seed=42)
+
+        assignments = pd.read_csv(out / "assignments.csv")
+        present_splits = set(assignments["split"].unique())
+        # No held-out CWEs in data -> only train/val/test
+        assert present_splits == {"train", "val", "test"}
+        assert len(assignments) == len(rows)
