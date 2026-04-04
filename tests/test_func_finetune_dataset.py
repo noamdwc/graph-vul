@@ -1,31 +1,7 @@
 """Tests for the function-level fine-tuning dataset."""
 
-import sys
-import types
-
 import pandas as pd
 import torch
-
-torch_geometric_module = types.ModuleType("torch_geometric")
-torch_geometric_data_module = types.ModuleType("torch_geometric.data")
-
-
-class _FakeData:
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-
-
-class _FakeBatch:
-    @staticmethod
-    def from_data_list(data_list):
-        return data_list
-
-
-torch_geometric_data_module.Batch = _FakeBatch
-torch_geometric_data_module.Data = _FakeData
-torch_geometric_module.data = torch_geometric_data_module
-sys.modules.setdefault("torch_geometric", torch_geometric_module)
-sys.modules.setdefault("torch_geometric.data", torch_geometric_data_module)
 
 from graph_vul.dataset.func_finetune_dataset import (
     FuncFinetuneDataset,
