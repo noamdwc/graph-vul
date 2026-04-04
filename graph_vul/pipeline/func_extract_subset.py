@@ -149,9 +149,11 @@ def _drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
 
     cleaned = df.copy()
     for col in required_nonempty:
-        cleaned = cleaned[cleaned[col].notna() & cleaned[col].astype(str).str.strip().ne("")]
+        if col in cleaned.columns:
+            cleaned = cleaned[cleaned[col].notna() & cleaned[col].astype(str).str.strip().ne("")]
     for col in required_nonnull:
-        cleaned = cleaned[cleaned[col].notna()]
+        if col in cleaned.columns:
+            cleaned = cleaned[cleaned[col].notna()]
 
     # Strip \r from string columns — trailing \r breaks CSV round-trips
     # when QUOTE_ALL is used (the \r\n sequence is parsed as a row delimiter).
@@ -368,13 +370,11 @@ def extract_func_subset(
     report_path = output_report or str(FUNC_SUBSET_REPORT)
 
     if input_csv:
-        logger.info(
-            "Ignoring --input=%s because the function baseline now loads %s directly from Hugging Face",
-            input_csv,
-            TRAINING_DATASET_NAME,
-        )
-    logger.info("Loading %s training source", TRAINING_DATASET_NAME)
-    df = load_primevul_training_data()
+        logger.info("Loading from local CSV: %s", input_csv)
+        df = pd.read_csv(input_csv)
+    else:
+        logger.info("Loading %s training source", TRAINING_DATASET_NAME)
+        df = load_primevul_training_data()
     stage_summaries: list[dict] = []
 
     all_cwe = _select_labeled_rows(df)

@@ -8,14 +8,7 @@ from graph_vul.pipeline import func_extract_subset as subset_module
 
 
 def _write_raw_bigvul(df: pd.DataFrame, path) -> None:
-    raw_df = df.rename(
-        columns={
-            "cwe_id": "CWE ID",
-            "cve_id": "CVE ID",
-            "cve_desc": "Summary",
-        }
-    )
-    raw_df.to_csv(path, index=False)
+    df.to_csv(path, index=False)
 
 
 class TestExtractFuncSubset:
@@ -195,8 +188,9 @@ class TestExtractFuncSubset:
             "deduplication",
             "token_length_filter",
             "project_cwe_max_filter",
+            "drop_invalid_rows",
         ]
-        assert manifest["filter_stages"][-1]["after_rows"] == 2
+        assert manifest["filter_stages"][-2]["after_rows"] == 2
         assert manifest["top_cwes"][0]["cwe_id"] == "CWE-119"
         assert manifest["token_length_summary"]["count"] == 2
 
