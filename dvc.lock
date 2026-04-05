@@ -173,8 +173,8 @@ stages:
     deps:
     - path: graph_vul/config.py
       hash: md5
-      md5: c6033ae8d2ba746d47929c32e95b501e
-      size: 3610
+      md5: 7ca89a3acf693c093d6ad0870b10a049
+      size: 3680
     - path: graph_vul/dataset/primevul_adapter.py
       hash: md5
       md5: 5d94d67ecc93b517c6911712d17e7de6
@@ -458,3 +458,74 @@ stages:
       md5: 28a448dd13d8145f867a66091698caa9.dir
       size: 28540165
       nfiles: 4
+  partition_by_length:
+    cmd: python -m graph_vul.pipeline.partition_by_length --input 
+      data/func_subset.csv --output-dir data/partitions
+    deps:
+    - path: data/func_subset.csv
+      hash: md5
+      md5: 74435873c3a77afb3fba5464d96dc7e2
+      size: 145492471
+    - path: graph_vul/config.py
+      hash: md5
+      md5: 7ca89a3acf693c093d6ad0870b10a049
+      size: 3680
+    - path: graph_vul/pipeline/partition_by_length.py
+      hash: md5
+      md5: 1b6a3e33ff8ac3953e2509a82ef15b3f
+      size: 2676
+    outs:
+    - path: data/partitions/other/func_subset.csv
+      hash: md5
+      md5: 7fc417f3de01b0d706d101756432752c
+      size: 107763380
+    - path: data/partitions/short/func_subset.csv
+      hash: md5
+      md5: 9cfbbb9dd80ea295e2c63152ca7a0bf6
+      size: 36059953
+  func_split_other:
+    cmd: python -m graph_vul.pipeline.split_data --input 
+      data/partitions/other/func_subset.csv --output 
+      data/partitions/other/splits --split-mode project_disjoint
+    deps:
+    - path: data/partitions/other/func_subset.csv
+      hash: md5
+      md5: 7fc417f3de01b0d706d101756432752c
+      size: 107763380
+    - path: graph_vul/config.py
+      hash: md5
+      md5: 7ca89a3acf693c093d6ad0870b10a049
+      size: 3680
+    - path: graph_vul/pipeline/split_data.py
+      hash: md5
+      md5: a1249504c0815e51d88190d95c414e4d
+      size: 68590
+    outs:
+    - path: data/partitions/other/splits
+      hash: md5
+      md5: b8483c2b8e70a4be16f25ba8c822e5a6.dir
+      size: 2810297
+      nfiles: 5
+  func_split_short:
+    cmd: python -m graph_vul.pipeline.split_data --input 
+      data/partitions/short/func_subset.csv --output 
+      data/partitions/short/splits --split-mode project_disjoint
+    deps:
+    - path: data/partitions/short/func_subset.csv
+      hash: md5
+      md5: 9cfbbb9dd80ea295e2c63152ca7a0bf6
+      size: 36059953
+    - path: graph_vul/config.py
+      hash: md5
+      md5: 7ca89a3acf693c093d6ad0870b10a049
+      size: 3680
+    - path: graph_vul/pipeline/split_data.py
+      hash: md5
+      md5: a1249504c0815e51d88190d95c414e4d
+      size: 68590
+    outs:
+    - path: data/partitions/short/splits
+      hash: md5
+      md5: e3cad09149b6042c1ff776e09060f2e4.dir
+      size: 4056417
+      nfiles: 5
