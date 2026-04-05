@@ -240,10 +240,8 @@ class FuncFinetuneLitModule(pl.LightningModule):
         encoder_params = list(self.model.encoder.parameters())
         head_params = list(self.model.head.parameters())
 
-        # Start encoder LR at 0 if frozen (optimizer still tracks params for later unfreeze)
-        initial_encoder_lr = 0.0 if self.hparams.freeze_encoder_epochs > 0 else self.hparams.encoder_lr
         param_groups = [
-            {"params": encoder_params, "lr": initial_encoder_lr},
+            {"params": encoder_params, "lr": self.hparams.encoder_lr},
             {"params": head_params, "lr": self.hparams.head_lr},
         ]
 
