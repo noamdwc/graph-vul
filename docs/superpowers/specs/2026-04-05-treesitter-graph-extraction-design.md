@@ -46,7 +46,7 @@ AST edges only for this ablation. `edge_type_ids` are all `0`. The model config 
 
 ### AST edge construction
 
-For each tree-sitter node, create a directed edge from parent to each child. This produces the same structural information as Joern's AST edges.
+For each tree-sitter node, create a directed edge from parent to each **named** child (i.e., `node.is_named == True`). Anonymous nodes (punctuation like `{`, `;`, `)`) are skipped — they add noise without structural information. This produces a clean AST comparable to Joern's AST edges.
 
 ## Dependencies
 
