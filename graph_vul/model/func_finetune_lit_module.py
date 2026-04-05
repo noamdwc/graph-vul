@@ -19,6 +19,8 @@ from graph_vul.model.func_finetune_model import FuncFinetuneModel
 logger = logging.getLogger(__name__)
 
 SHORT_FUNCTION_TOKEN_THRESHOLD = 64
+FREEZE_ENCODER_EPOCHS = 3
+UNFREEZE_ENCODER_LR = 5e-6
 
 
 class FuncFinetuneLitModule(pl.LightningModule):
@@ -36,6 +38,8 @@ class FuncFinetuneLitModule(pl.LightningModule):
         fusion_layers: list[int] | None = None,
         fusion_method: str = "scalar_gated_residual",
         final_graph_concat: bool = True,
+        freeze_encoder_epochs: int = FREEZE_ENCODER_EPOCHS,
+        unfreeze_encoder_lr: float = UNFREEZE_ENCODER_LR,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -48,6 +52,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
             final_graph_concat=final_graph_concat,
         )
         self.criterion = torch.nn.BCEWithLogitsLoss()
+        self.threshold: float = 0.0  # logit-space threshold (0.0 = probability 0.5)
 
         # Train metrics
         self.train_accuracy = torchmetrics.classification.BinaryAccuracy()
@@ -82,6 +87,27 @@ class FuncFinetuneLitModule(pl.LightningModule):
     def forward(self, input_ids, attention_mask, cwe_embedding, graph_batch=None):
         return self.model(input_ids, attention_mask, cwe_embedding, graph_batch=graph_batch)
 
+    def _freeze_encoder(self) -> None:
+        for param in self.model.encoder.parameters():
+            param.requires_grad = False
+        logger.info("Encoder frozen")
+
+    def _unfreeze_encoder(self) -> None:
+        for param in self.model.encoder.parameters():
+            param.requires_grad = True
+        # Update the encoder LR in the optimizer to the lower unfreeze rate
+        optimizer = self.optimizers()
+        optimizer.param_groups[0]["lr"] = self.hparams.unfreeze_encoder_lr
+        logger.info("Encoder unfrozen with lr=%.2e", self.hparams.unfreeze_encoder_lr)
+
+    def on_train_start(self) -> None:
+        if self.hparams.freeze_encoder_epochs > 0:
+            self._freeze_encoder()
+
+    def on_train_epoch_start(self) -> None:
+        if self.current_epoch == self.hparams.freeze_encoder_epochs:
+            self._unfreeze_encoder()
+
     def _shared_step(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         graph_batch = batch.get("graph_data")
         logits = self.model(
@@ -91,7 +117,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
             graph_batch=graph_batch,
         ).squeeze(-1)
         loss = self.criterion(logits, batch["label"])
-        preds = (logits >= 0).long()
+        preds = (logits >= self.threshold).long()
         return loss, preds, batch["label"].long()
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
@@ -200,12 +226,24 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self.log(f"{prefix}_recall", self.test_recall, on_step=False, on_epoch=True, add_dataloader_idx=False)
         self.log(f"{prefix}_f1", self.test_f1, on_step=False, on_epoch=True, add_dataloader_idx=False)
 
+    def predict_step(self, batch: dict, batch_idx: int) -> dict:
+        graph_batch = batch.get("graph_data")
+        logits = self.model(
+            batch["input_ids"],
+            batch["attention_mask"],
+            batch["cwe_embedding"],
+            graph_batch=graph_batch,
+        ).squeeze(-1)
+        return {"logits": logits, "labels": batch["label"].long()}
+
     def configure_optimizers(self) -> dict:
         encoder_params = list(self.model.encoder.parameters())
         head_params = list(self.model.head.parameters())
 
+        # Start encoder LR at 0 if frozen (optimizer still tracks params for later unfreeze)
+        initial_encoder_lr = 0.0 if self.hparams.freeze_encoder_epochs > 0 else self.hparams.encoder_lr
         param_groups = [
-            {"params": encoder_params, "lr": self.hparams.encoder_lr},
+            {"params": encoder_params, "lr": initial_encoder_lr},
             {"params": head_params, "lr": self.hparams.head_lr},
         ]
 
@@ -221,10 +259,15 @@ class FuncFinetuneLitModule(pl.LightningModule):
 
         optimizer = torch.optim.AdamW(param_groups, weight_decay=self.hparams.weight_decay)
 
+        freeze_epochs = self.hparams.freeze_encoder_epochs
+
         def get_lr_lambda(epoch: int) -> float:
-            if epoch < self.hparams.warmup_epochs:
+            # During frozen epochs, keep head LR constant (no decay)
+            # After unfreeze, apply warmup then decay
+            effective_epoch = epoch - freeze_epochs
+            if effective_epoch < self.hparams.warmup_epochs:
                 return 1.0
-            return self.hparams.lr_scheduler_factor ** (epoch - self.hparams.warmup_epochs)
+            return self.hparams.lr_scheduler_factor ** (effective_epoch - self.hparams.warmup_epochs)
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr_lambda)
         return [optimizer], [scheduler]

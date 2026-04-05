@@ -5,16 +5,19 @@ import json
 import logging
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
+from sklearn.metrics import f1_score
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from transformers import AutoTokenizer
 
 from graph_vul.config import (
     DATA_DIR,
+    EARLY_STOPPING_PATIENCE,
     FINETUNE_BATCH_SIZE,
     FINETUNE_ENCODER_LR,
     FINETUNE_GRAD_ACCUM_STEPS,
@@ -46,6 +49,33 @@ def _load_graph_vocab() -> tuple[int, int]:
     return len(node_vocab), len(edge_vocab)
 
 
+def _sweep_threshold(
+    trainer: pl.Trainer,
+    model: pl.LightningModule,
+    val_loader: DataLoader,
+    thresholds: np.ndarray | None = None,
+) -> float:
+    """Sweep classification thresholds on val set, return logit threshold maximizing F1."""
+    if thresholds is None:
+        thresholds = np.arange(-2.0, 2.05, 0.1)
+
+    predictions = trainer.predict(model, dataloaders=val_loader, ckpt_path="best")
+    all_logits = torch.cat([p["logits"] for p in predictions]).cpu().numpy()
+    all_labels = torch.cat([p["labels"] for p in predictions]).cpu().numpy()
+
+    best_f1 = -1.0
+    best_thresh = 0.0
+    for thresh in thresholds:
+        preds = (all_logits >= thresh).astype(int)
+        f1 = f1_score(all_labels, preds, zero_division=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thresh = float(thresh)
+
+    logger.info("Threshold sweep: best F1=%.4f at threshold=%.2f (prob=%.4f)", best_f1, best_thresh, 1 / (1 + np.exp(-best_thresh)))
+    return best_thresh
+
+
 def train(
     num_epochs: int = FINETUNE_NUM_EPOCHS,
     batch_size: int = FINETUNE_BATCH_SIZE,
@@ -60,6 +90,8 @@ def train(
     checkpoint_path: Path | None = None,
     metrics_path: Path | None = None,
     run_tag: str | None = None,
+    freeze_encoder_epochs: int = 3,
+    unfreeze_encoder_lr: float = 5e-6,
 ) -> None:
     if checkpoint_path is None:
         checkpoint_path = CHECKPOINT_PATH
@@ -149,6 +181,8 @@ def train(
         fusion_layers=fusion_layers,
         fusion_method=fusion_method,
         final_graph_concat=final_graph_concat,
+        freeze_encoder_epochs=freeze_encoder_epochs,
+        unfreeze_encoder_lr=unfreeze_encoder_lr,
     )
 
     # Logger
@@ -171,6 +205,8 @@ def train(
             "fusion_method": fusion_method,
             "final_graph_concat": final_graph_concat,
             "run_tag": run_tag,
+            "freeze_encoder_epochs": freeze_encoder_epochs,
+            "unfreeze_encoder_lr": unfreeze_encoder_lr,
             **graph_stats,
         },
     )
@@ -183,6 +219,13 @@ def train(
         mode="max",
         save_top_k=1,
     )
+    early_stop_cb = EarlyStopping(
+        monitor="val_f1",
+        mode="max",
+        patience=EARLY_STOPPING_PATIENCE,
+        min_delta=0.005,
+        verbose=True,
+    )
 
     # Trainer
     trainer = pl.Trainer(
@@ -190,12 +233,17 @@ def train(
         accelerator="auto",
         precision="16-mixed",
         accumulate_grad_batches=grad_accum,
-        callbacks=[checkpoint_cb, LearningRateMonitor(logging_interval="epoch")],
+        callbacks=[checkpoint_cb, early_stop_cb, LearningRateMonitor(logging_interval="epoch")],
         logger=wandb_logger,
         gradient_clip_val=1.0,
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_dataloaders)
+
+    # Sweep threshold on val set to maximize F1
+    best_threshold = _sweep_threshold(trainer, model, val_loader)
+    model.threshold = best_threshold
+    logger.info("Using optimized threshold=%.2f for test evaluation", best_threshold)
 
     # Test on seen CWEs
     model.set_test_prefix("test")
@@ -217,7 +265,7 @@ def train(
         logger.info("Evaluated %s: %d samples", split_name, len(ds))
 
     # Write DVC metrics
-    metrics = {}
+    metrics = {"optimal_threshold": best_threshold}
     all_prefixes = ["val", "unseen_val", "test", "train"] + unseen_splits
     for prefix in all_prefixes:
         for metric in ("accuracy", "precision", "recall", "f1", "0_64_f1"):
@@ -241,6 +289,8 @@ if __name__ == "__main__":
     parser.add_argument("--grad-accum", type=int, default=FINETUNE_GRAD_ACCUM_STEPS)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--use-graph", action="store_true", help="Enable graph (AST+CFG RGCN) features")
+    parser.add_argument("--freeze-encoder-epochs", type=int, default=3, help="Epochs to freeze encoder (head-only warmup)")
+    parser.add_argument("--unfreeze-encoder-lr", type=float, default=5e-6, help="Encoder LR after unfreezing")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -252,4 +302,6 @@ if __name__ == "__main__":
         grad_accum=args.grad_accum,
         seed=args.seed,
         use_graph=args.use_graph,
+        freeze_encoder_epochs=args.freeze_encoder_epochs,
+        unfreeze_encoder_lr=args.unfreeze_encoder_lr,
     )
