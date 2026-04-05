@@ -56,6 +56,15 @@ stages:
   #   outs:
   #     - data/processed/graph_artifacts
 
+  func_treesitter_graphs:
+    cmd: python -m graph_vul.pipeline.treesitter_graphs --input data/func_subset.csv --output data/processed/graph_artifacts
+    deps:
+      - data/func_subset.csv
+      - graph_vul/pipeline/treesitter_graphs.py
+      - graph_vul/config.py
+    outs:
+      - data/processed/graph_artifacts
+
   embed_cwe:
     cmd: python -m graph_vul.pipeline.embed_cwe --input 
       data/cwe_descriptions.json --output data/processed/cwe_embeddings
