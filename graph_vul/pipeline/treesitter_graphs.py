@@ -78,60 +78,84 @@ def parse_function_ast(
 
 
 def extract_treesitter_graphs(
-    input_csv: str,
-    output_dir: str,
+    input_csv: str | None = None,
+    output_dir: str | None = None,
 ) -> None:
-    """Extract AST graph .pt files for all samples in input_csv.
+    """Extract AST graphs from all functions in a subset CSV.
 
-    For each row, produces <output_dir>/<sample_id>.pt with keys:
-      - node_type_ids: LongTensor of shape [N]
-      - edge_index: LongTensor of shape [2, E]
-      - edge_type_ids: LongTensor of shape [E] (all zeros = AST)
-
-    Also writes node_type_vocab.json and edge_type_vocab.json to output_dir.
-    Skips rows where func_before is empty or .pt already exists.
+    Two-pass approach:
+    1. Scan all samples to build node type vocabulary.
+    2. Parse again and write per-sample .pt files.
     """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = input_csv or str(FUNC_SUBSET_CSV)
+    dst = Path(output_dir) if output_dir else GRAPH_ARTIFACTS_DIR
+    dst.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_csv(input_csv)
+    node_vocab_path = dst / "node_type_vocab.json"
+    edge_vocab_path = dst / "edge_type_vocab.json"
 
-    # Build node type vocabulary incrementally
-    node_type_to_id: dict[str, int] = {}
-    edge_type_to_id: dict[str, int] = {"AST": 0}
+    df = pd.read_csv(csv_path, usecols=["sample_id", "func_before"])
+    items = [
+        (str(row["sample_id"]), row.get("func_before", ""))
+        for _, row in df.iterrows()
+    ]
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Extracting graphs"):
-        sample_id = str(row["sample_id"])
-        pt_path = output_path / f"{sample_id}.pt"
+    # --- Pass 1: build vocab ---
+    if not node_vocab_path.exists():
+        logger.info("Building node type vocab from %d samples...", len(items))
+        all_node_types: set[str] = set()
+        for _sid, code in tqdm(items, desc="Scanning vocab", unit="sample"):
+            result = parse_function_ast(code)
+            if result is not None:
+                node_types, _ = result
+                all_node_types.update(node_types)
 
-        if pt_path.exists():
+        node_vocab = {nt: i for i, nt in enumerate(sorted(all_node_types))}
+        with open(node_vocab_path, "w") as f:
+            json.dump(node_vocab, f, indent=2)
+        logger.info("Wrote node vocab with %d entries", len(node_vocab))
+    else:
+        with open(node_vocab_path) as f:
+            node_vocab = json.load(f)
+
+    # Edge vocab is trivial — AST only
+    edge_vocab = {"AST": 0}
+    with open(edge_vocab_path, "w") as f:
+        json.dump(edge_vocab, f, indent=2)
+
+    # --- Pass 2: extract and write .pt files ---
+    processed = 0
+    skipped_exists = 0
+    skipped_empty = 0
+
+    progress = tqdm(items, desc="Extracting graphs", unit="sample")
+    for sid, code in progress:
+        out_path = dst / f"{sid}.pt"
+        if out_path.exists():
+            skipped_exists += 1
+            progress.set_postfix(done=processed, skip=skipped_exists, empty=skipped_empty)
             continue
 
-        func_code = row["func_before"]
-        if not isinstance(func_code, str) or not func_code.strip():
-            continue
-
-        result = parse_function_ast(func_code)
+        result = parse_function_ast(code)
         if result is None:
+            skipped_empty += 1
+            progress.set_postfix(done=processed, skip=skipped_exists, empty=skipped_empty)
             continue
 
         node_types, edges = result
 
-        # Assign vocabulary IDs
-        for nt in node_types:
-            if nt not in node_type_to_id:
-                node_type_to_id[nt] = len(node_type_to_id)
-
         node_type_ids = torch.tensor(
-            [node_type_to_id[nt] for nt in node_types], dtype=torch.long
+            [node_vocab.get(nt, 0) for nt in node_types], dtype=torch.long,
         )
 
         if edges:
-            edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+            src_list = [e[0] for e in edges]
+            dst_list = [e[1] for e in edges]
+            edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
+            edge_type_ids = torch.zeros(len(edges), dtype=torch.long)
         else:
             edge_index = torch.zeros(2, 0, dtype=torch.long)
-
-        edge_type_ids = torch.zeros(edge_index.shape[1], dtype=torch.long)
+            edge_type_ids = torch.zeros(0, dtype=torch.long)
 
         torch.save(
             {
@@ -139,43 +163,24 @@ def extract_treesitter_graphs(
                 "edge_index": edge_index,
                 "edge_type_ids": edge_type_ids,
             },
-            pt_path,
+            out_path,
         )
+        processed += 1
+        progress.set_postfix(done=processed, skip=skipped_exists, empty=skipped_empty)
 
-    # Write vocabulary files
-    node_vocab_path = output_path / "node_type_vocab.json"
-    with open(node_vocab_path, "w") as f:
-        json.dump(node_type_to_id, f, indent=2)
-
-    edge_vocab_path = output_path / "edge_type_vocab.json"
-    with open(edge_vocab_path, "w") as f:
-        json.dump(edge_type_to_id, f, indent=2)
-
-
-def main() -> None:
-    """CLI entry point for tree-sitter graph extraction."""
-    logging.basicConfig(level=logging.INFO)
-
-    parser = argparse.ArgumentParser(
-        description="Extract AST graph artifacts from C functions using tree-sitter."
-    )
-    parser.add_argument(
-        "--input-csv",
-        default=str(FUNC_SUBSET_CSV),
-        help="Path to CSV with sample_id and func_before columns.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=str(GRAPH_ARTIFACTS_DIR),
-        help="Directory to write .pt files and vocab JSON.",
-    )
-    args = parser.parse_args()
-
-    extract_treesitter_graphs(
-        input_csv=args.input_csv,
-        output_dir=args.output_dir,
+    logger.info(
+        "Graph extraction complete: %d processed, %d skipped (existing), %d skipped (empty) out of %d total",
+        processed, skipped_exists, skipped_empty, len(items),
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Extract AST graph artifacts from C functions using tree-sitter",
+    )
+    parser.add_argument("--input", type=str, default=None, help="Path to subset CSV")
+    parser.add_argument("--output", type=str, default=None, help="Output directory for graph artifacts")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    extract_treesitter_graphs(input_csv=args.input, output_dir=args.output)
