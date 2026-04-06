@@ -4,6 +4,7 @@ import logging
 
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional as F
 import torchmetrics
 
 from graph_vul.config import (
@@ -23,6 +24,31 @@ FREEZE_ENCODER_EPOCHS = 3
 UNFREEZE_ENCODER_LR = 5e-6
 
 
+class BinaryFocalLoss(torch.nn.Module):
+    """Focal loss for binary classification with logits.
+
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    When gamma=0, this reduces to standard BCE.
+    """
+
+    def __init__(self, gamma: float = 2.0, alpha: float = 0.25) -> None:
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        p_t = torch.exp(-bce)  # p_t = p if y=1, (1-p) if y=0
+        focal_weight = (1 - p_t) ** self.gamma
+
+        # Alpha weighting: alpha for positives, (1-alpha) for negatives
+        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+
+        loss = alpha_t * focal_weight * bce
+        return loss.mean()
+
+
 class FuncFinetuneLitModule(pl.LightningModule):
     def __init__(
         self,
@@ -40,6 +66,10 @@ class FuncFinetuneLitModule(pl.LightningModule):
         final_graph_concat: bool = True,
         freeze_encoder_epochs: int = FREEZE_ENCODER_EPOCHS,
         unfreeze_encoder_lr: float = UNFREEZE_ENCODER_LR,
+        focal_gamma: float = 0.0,
+        focal_alpha: float = 0.25,
+        head_dropout: float | None = None,
+        freeze_encoder_fully: bool = False,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -50,8 +80,13 @@ class FuncFinetuneLitModule(pl.LightningModule):
             fusion_layers=fusion_layers,
             fusion_method=fusion_method,
             final_graph_concat=final_graph_concat,
+            dropout=head_dropout if head_dropout is not None else None,
         )
-        self.criterion = torch.nn.BCEWithLogitsLoss()
+        if focal_gamma > 0:
+            self.criterion = BinaryFocalLoss(gamma=focal_gamma, alpha=focal_alpha)
+            logger.info("Using focal loss: gamma=%.1f, alpha=%.2f", focal_gamma, focal_alpha)
+        else:
+            self.criterion = torch.nn.BCEWithLogitsLoss()
         self.threshold: float = 0.0  # logit-space threshold (0.0 = probability 0.5)
 
         # Train metrics
@@ -101,10 +136,12 @@ class FuncFinetuneLitModule(pl.LightningModule):
         logger.info("Encoder unfrozen with lr=%.2e", self.hparams.unfreeze_encoder_lr)
 
     def on_train_start(self) -> None:
-        if self.hparams.freeze_encoder_epochs > 0:
+        if self.hparams.freeze_encoder_fully or self.hparams.freeze_encoder_epochs > 0:
             self._freeze_encoder()
 
     def on_train_epoch_start(self) -> None:
+        if self.hparams.freeze_encoder_fully:
+            return  # Never unfreeze
         if self.current_epoch == self.hparams.freeze_encoder_epochs:
             self._unfreeze_encoder()
 

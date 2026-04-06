@@ -34,7 +34,7 @@ class FuncFinetuneModel(nn.Module):
         model_name: str = UNIXCODER_MODEL_NAME,
         cwe_dim: int = DEBERTA_EMBEDDING_DIM,
         hidden_dim: int = FUNC_MLP_HIDDEN_DIM,
-        dropout: float = FUNC_MLP_DROPOUT,
+        dropout: float | None = FUNC_MLP_DROPOUT,
         graph_dim: int = 0,
         num_node_types: int = 0,
         num_relations: int = 0,
@@ -49,6 +49,8 @@ class FuncFinetuneModel(nn.Module):
         self.encoder = AutoModel.from_pretrained(model_name)
         encoder_dim = self.encoder.config.hidden_size  # 768
         self.graph_dim = graph_dim
+        if dropout is None:
+            dropout = FUNC_MLP_DROPOUT
         self.final_graph_concat = final_graph_concat
 
         if graph_dim > 0:

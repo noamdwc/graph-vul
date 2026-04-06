@@ -57,7 +57,7 @@ def _sweep_threshold(
 ) -> float:
     """Sweep classification thresholds on val set, return logit threshold maximizing F1."""
     if thresholds is None:
-        thresholds = np.arange(-2.0, 2.05, 0.1)
+        thresholds = np.arange(-4.0, 4.05, 0.05)
 
     predictions = trainer.predict(model, dataloaders=val_loader, ckpt_path="best")
     all_logits = torch.cat([p["logits"] for p in predictions]).cpu().numpy()
@@ -65,14 +65,36 @@ def _sweep_threshold(
 
     best_f1 = -1.0
     best_thresh = 0.0
+    sweep_results = []
     for thresh in thresholds:
         preds = (all_logits >= thresh).astype(int)
         f1 = f1_score(all_labels, preds, zero_division=0)
+        sweep_results.append({"threshold": float(thresh), "f1": f1})
         if f1 > best_f1:
             best_f1 = f1
             best_thresh = float(thresh)
 
-    logger.info("Threshold sweep: best F1=%.4f at threshold=%.2f (prob=%.4f)", best_f1, best_thresh, 1 / (1 + np.exp(-best_thresh)))
+    best_prob = 1 / (1 + np.exp(-best_thresh))
+    logger.info("Threshold sweep: best F1=%.4f at threshold=%.2f (prob=%.4f)", best_f1, best_thresh, best_prob)
+
+    # Log sweep curve to W&B if available
+    if trainer.logger and hasattr(trainer.logger, "experiment"):
+        try:
+            import wandb
+
+            table = wandb.Table(columns=["threshold", "probability", "f1"])
+            for r in sweep_results:
+                prob = 1 / (1 + np.exp(-r["threshold"]))
+                table.add_data(r["threshold"], prob, r["f1"])
+            trainer.logger.experiment.log({"threshold_sweep": table})
+            trainer.logger.experiment.log({
+                "optimal_threshold": best_thresh,
+                "optimal_threshold_prob": best_prob,
+                "optimal_threshold_f1": best_f1,
+            })
+        except Exception:
+            pass
+
     return best_thresh
 
 
@@ -92,6 +114,10 @@ def train(
     run_tag: str | None = None,
     freeze_encoder_epochs: int = 3,
     unfreeze_encoder_lr: float = 5e-6,
+    focal_gamma: float = 0.0,
+    focal_alpha: float = 0.25,
+    head_dropout: float | None = None,
+    freeze_encoder_fully: bool = False,
 ) -> None:
     if checkpoint_path is None:
         checkpoint_path = CHECKPOINT_PATH
@@ -183,6 +209,10 @@ def train(
         final_graph_concat=final_graph_concat,
         freeze_encoder_epochs=freeze_encoder_epochs,
         unfreeze_encoder_lr=unfreeze_encoder_lr,
+        focal_gamma=focal_gamma,
+        focal_alpha=focal_alpha,
+        head_dropout=head_dropout,
+        freeze_encoder_fully=freeze_encoder_fully,
     )
 
     # Logger
@@ -207,6 +237,10 @@ def train(
             "run_tag": run_tag,
             "freeze_encoder_epochs": freeze_encoder_epochs,
             "unfreeze_encoder_lr": unfreeze_encoder_lr,
+            "focal_gamma": focal_gamma,
+            "focal_alpha": focal_alpha,
+            "head_dropout": head_dropout,
+            "freeze_encoder_fully": freeze_encoder_fully,
             **graph_stats,
         },
     )
@@ -291,6 +325,10 @@ if __name__ == "__main__":
     parser.add_argument("--use-graph", action="store_true", help="Enable graph (AST+CFG RGCN) features")
     parser.add_argument("--freeze-encoder-epochs", type=int, default=3, help="Epochs to freeze encoder (head-only warmup)")
     parser.add_argument("--unfreeze-encoder-lr", type=float, default=5e-6, help="Encoder LR after unfreezing")
+    parser.add_argument("--focal-gamma", type=float, default=0.0, help="Focal loss gamma (0=standard BCE)")
+    parser.add_argument("--focal-alpha", type=float, default=0.25, help="Focal loss alpha (positive class weight)")
+    parser.add_argument("--head-dropout", type=float, default=None, help="Head dropout (default: use config FUNC_MLP_DROPOUT)")
+    parser.add_argument("--freeze-encoder-fully", action="store_true", help="Keep encoder frozen for all epochs (head-only training)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -304,4 +342,8 @@ if __name__ == "__main__":
         use_graph=args.use_graph,
         freeze_encoder_epochs=args.freeze_encoder_epochs,
         unfreeze_encoder_lr=args.unfreeze_encoder_lr,
+        focal_gamma=args.focal_gamma,
+        focal_alpha=args.focal_alpha,
+        head_dropout=args.head_dropout,
+        freeze_encoder_fully=args.freeze_encoder_fully,
     )
