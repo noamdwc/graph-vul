@@ -98,6 +98,8 @@ class FuncFinetuneLitModule(pl.LightningModule):
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
+        self.hparams["cwe_embeddings_dir"] = str(cwe_embeddings_dir)
+        self.hparams["subset_csv"] = str(subset_csv)
         self.matching_config = build_matching_config(
             ablation_mode=ablation_mode,
             projection_dim=matching_projection_dim,
