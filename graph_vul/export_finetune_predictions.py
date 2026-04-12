@@ -101,6 +101,7 @@ def export_split_predictions(
         tokenizer=tokenizer,
         subset_csv=subset_csv,
         splits_dir=splits_dir,
+        embedding_dim=model.model.cwe_projection.in_features,
         use_graph=use_graph,
     )
     if len(dataset) != len(metadata_df):

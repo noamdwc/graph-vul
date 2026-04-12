@@ -108,9 +108,11 @@ class ExternalEvalDataset(Dataset):
         tokenizer: AutoTokenizer | None = None,
         max_length: int = 512,
         cwe_embeddings_dir: str | Path | None = None,
+        embedding_dim: int = DEBERTA_EMBEDDING_DIM,
     ) -> None:
         self.max_length = max_length
         self.cwe_dir = Path(cwe_embeddings_dir) if cwe_embeddings_dir else PROCESSED_DIR / "cwe_embeddings"
+        self.embedding_dim = embedding_dim
 
         if tokenizer is not None:
             self.tokenizer = tokenizer
@@ -142,9 +144,9 @@ class ExternalEvalDataset(Dataset):
         if cwe_id not in self._cwe_cache:
             cwe_path = self.cwe_dir / f"{cwe_id}.pt"
             if cwe_path.exists():
-                self._cwe_cache[cwe_id] = torch.load(cwe_path, weights_only=True)
+                self._cwe_cache[cwe_id] = torch.load(cwe_path, weights_only=True).float()
             else:
-                self._cwe_cache[cwe_id] = torch.zeros(DEBERTA_EMBEDDING_DIM)
+                self._cwe_cache[cwe_id] = torch.zeros(self.embedding_dim, dtype=torch.float32)
         return self._cwe_cache[cwe_id]
 
     def __len__(self) -> int:

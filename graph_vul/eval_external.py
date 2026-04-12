@@ -186,6 +186,7 @@ def evaluate_external(
             df=df,
             tokenizer=tokenizer,
             cwe_embeddings_dir=cwe_embeddings_dir,
+            embedding_dim=model.model.cwe_projection.in_features,
         )
         loader = DataLoader(
             dataset,

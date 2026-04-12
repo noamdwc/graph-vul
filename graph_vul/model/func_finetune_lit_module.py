@@ -23,7 +23,6 @@ from graph_vul.config import (
     FUNC_SUBSET_CSV,
     WARMUP_EPOCHS,
     WEIGHT_DECAY,
-    DEBERTA_EMBEDDING_DIM,
 )
 from graph_vul.model.cwe_matching import (
     CWEEmbeddingStore,
@@ -118,7 +117,11 @@ class FuncFinetuneLitModule(pl.LightningModule):
             matching_projection_dim=matching_projection_dim,
             matching_config=self.matching_config,
         )
-        self.cwe_store = CWEEmbeddingStore(cwe_embeddings_dir=cwe_embeddings_dir, embedding_dim=DEBERTA_EMBEDDING_DIM)
+        cwe_embedding_dim = self.model.cwe_projection.in_features
+        self.cwe_store = CWEEmbeddingStore(
+            cwe_embeddings_dir=cwe_embeddings_dir,
+            embedding_dim=cwe_embedding_dim,
+        )
         candidate_cwe_ids = candidate_cwe_ids_from_subset(subset_csv)
         if not candidate_cwe_ids:
             candidate_cwe_ids = self.cwe_store.available_cwe_ids()
