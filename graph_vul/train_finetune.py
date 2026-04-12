@@ -28,6 +28,11 @@ from graph_vul.config import (
     GRAPH_EDGE_VOCAB_PATH,
     GRAPH_HIDDEN_DIM,
     GRAPH_NODE_VOCAB_PATH,
+    MATCHING_ABLATION_MODE,
+    MATCHING_LOSS_LAMBDA,
+    MATCHING_NEGATIVES_PER_POSITIVE,
+    MATCHING_PROJECTION_DIM,
+    MATCHING_TRIPLET_MARGIN,
     SEED,
     UNIXCODER_MODEL_NAME,
 )
@@ -118,6 +123,11 @@ def train(
     focal_alpha: float = 0.25,
     head_dropout: float | None = None,
     freeze_encoder_fully: bool = False,
+    ablation_mode: str = MATCHING_ABLATION_MODE,
+    matching_projection_dim: int = MATCHING_PROJECTION_DIM,
+    matching_negatives_per_positive: int = MATCHING_NEGATIVES_PER_POSITIVE,
+    matching_loss_lambda: float = MATCHING_LOSS_LAMBDA,
+    matching_triplet_margin: float = MATCHING_TRIPLET_MARGIN,
 ) -> None:
     if checkpoint_path is None:
         checkpoint_path = CHECKPOINT_PATH
@@ -213,6 +223,11 @@ def train(
         focal_alpha=focal_alpha,
         head_dropout=head_dropout,
         freeze_encoder_fully=freeze_encoder_fully,
+        ablation_mode=ablation_mode,
+        matching_projection_dim=matching_projection_dim,
+        matching_negatives_per_positive=matching_negatives_per_positive,
+        matching_loss_lambda=matching_loss_lambda,
+        matching_triplet_margin=matching_triplet_margin,
     )
 
     # Logger
@@ -241,6 +256,11 @@ def train(
             "focal_alpha": focal_alpha,
             "head_dropout": head_dropout,
             "freeze_encoder_fully": freeze_encoder_fully,
+            "ablation_mode": ablation_mode,
+            "matching_projection_dim": matching_projection_dim,
+            "matching_negatives_per_positive": matching_negatives_per_positive,
+            "matching_loss_lambda": matching_loss_lambda,
+            "matching_triplet_margin": matching_triplet_margin,
             **graph_stats,
         },
     )
@@ -299,7 +319,14 @@ def train(
         logger.info("Evaluated %s: %d samples", split_name, len(ds))
 
     # Write DVC metrics
-    metrics = {"optimal_threshold": best_threshold}
+    metrics = {
+        "optimal_threshold": best_threshold,
+        "ablation_mode": ablation_mode,
+        "matching_projection_dim": matching_projection_dim,
+        "matching_negatives_per_positive": matching_negatives_per_positive,
+        "matching_loss_lambda": matching_loss_lambda,
+        "matching_triplet_margin": matching_triplet_margin,
+    }
     all_prefixes = ["val", "unseen_val", "test", "train"] + unseen_splits
     for prefix in all_prefixes:
         for metric in ("accuracy", "precision", "recall", "f1", "0_64_f1"):
@@ -329,6 +356,11 @@ if __name__ == "__main__":
     parser.add_argument("--focal-alpha", type=float, default=0.25, help="Focal loss alpha (positive class weight)")
     parser.add_argument("--head-dropout", type=float, default=None, help="Head dropout (default: use config FUNC_MLP_DROPOUT)")
     parser.add_argument("--freeze-encoder-fully", action="store_true", help="Keep encoder frozen for all epochs (head-only training)")
+    parser.add_argument("--ablation-mode", type=str, default=MATCHING_ABLATION_MODE, choices=["E0", "E1", "E2", "E3", "E4"])
+    parser.add_argument("--matching-projection-dim", type=int, default=MATCHING_PROJECTION_DIM)
+    parser.add_argument("--matching-negatives-per-positive", type=int, default=MATCHING_NEGATIVES_PER_POSITIVE)
+    parser.add_argument("--matching-loss-lambda", type=float, default=MATCHING_LOSS_LAMBDA)
+    parser.add_argument("--matching-triplet-margin", type=float, default=MATCHING_TRIPLET_MARGIN)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -346,4 +378,9 @@ if __name__ == "__main__":
         focal_alpha=args.focal_alpha,
         head_dropout=args.head_dropout,
         freeze_encoder_fully=args.freeze_encoder_fully,
+        ablation_mode=args.ablation_mode,
+        matching_projection_dim=args.matching_projection_dim,
+        matching_negatives_per_positive=args.matching_negatives_per_positive,
+        matching_loss_lambda=args.matching_loss_lambda,
+        matching_triplet_margin=args.matching_triplet_margin,
     )

@@ -20,9 +20,11 @@ from graph_vul.config import (
     GRAPH_DROPOUT,
     GRAPH_HIDDEN_DIM,
     GRAPH_NODE_EMBED_DIM,
+    MATCHING_PROJECTION_DIM,
     UNIXCODER_MODEL_NAME,
 )
 from graph_vul.model.gated_residual_fusion import FUSION_REGISTRY
+from graph_vul.model.cwe_matching import MatchingConfig, build_matching_config
 from graph_vul.model.graph_encoder import FunctionGraphEncoder
 
 
@@ -44,11 +46,14 @@ class FuncFinetuneModel(nn.Module):
         fusion_layers: list[int] | None = None,
         fusion_method: str = "scalar_gated_residual",
         final_graph_concat: bool = True,
+        matching_projection_dim: int = MATCHING_PROJECTION_DIM,
+        matching_config: MatchingConfig | None = None,
     ) -> None:
         super().__init__()
         self.encoder = AutoModel.from_pretrained(model_name)
         encoder_dim = self.encoder.config.hidden_size  # 768
         self.graph_dim = graph_dim
+        self.matching_config = matching_config or build_matching_config()
         if dropout is None:
             dropout = FUNC_MLP_DROPOUT
         self.final_graph_concat = final_graph_concat
@@ -83,6 +88,8 @@ class FuncFinetuneModel(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
+        self.function_projection = nn.Linear(encoder_dim, matching_projection_dim)
+        self.cwe_projection = nn.Linear(cwe_dim, matching_projection_dim)
 
     def _register_fusion_hooks(self) -> None:
         """Register forward hooks on selected encoder layers for fusion."""
@@ -111,13 +118,13 @@ class FuncFinetuneModel(nn.Module):
             handle = encoder_layers[layer_idx].register_forward_hook(make_hook(fusion_mod))
             self._fusion_hooks.append(handle)
 
-    def forward(
+    def _encode_features(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         cwe_embedding: torch.Tensor,
         graph_batch: Batch | None = None,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
         # Compute graph embedding early so fusion hooks can access it
         graph_emb: torch.Tensor | None = None
         if self.graph_dim > 0 and graph_batch is not None:
@@ -155,4 +162,33 @@ class FuncFinetuneModel(nn.Module):
 
         parts.append(cwe_embedding)
         fused = torch.cat(parts, dim=-1)
-        return self.head(fused)  # [B, 1]
+        logits = self.head(fused)
+        function_match = torch.nn.functional.normalize(self.function_projection(pooled), dim=-1)
+        cwe_match = torch.nn.functional.normalize(self.cwe_projection(cwe_embedding), dim=-1)
+        return {
+            "logits": logits,
+            "pooled": pooled,
+            "function_match": function_match,
+            "cwe_match": cwe_match,
+        }
+
+    def project_cwe_embeddings(self, cwe_embedding: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.normalize(self.cwe_projection(cwe_embedding), dim=-1)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        cwe_embedding: torch.Tensor,
+        graph_batch: Batch | None = None,
+        return_matching_outputs: bool = False,
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        outputs = self._encode_features(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            cwe_embedding=cwe_embedding,
+            graph_batch=graph_batch,
+        )
+        if return_matching_outputs:
+            return outputs
+        return outputs["logits"]  # [B, 1]

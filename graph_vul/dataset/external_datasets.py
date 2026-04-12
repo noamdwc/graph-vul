@@ -52,6 +52,8 @@ def load_primevul() -> pd.DataFrame:
     df = ds.to_pandas()
 
     df = df.rename(columns={"func": "func_before", "target": "vul"})
+    df = df.dropna(subset=["vul", "func_before"]).reset_index(drop=True)
+    df["vul"] = df["vul"].astype(int)
     df["cwe_id"] = df["cwe"].apply(_normalise_cwe)
     df["sample_id"] = "primevul_" + df.index.astype(str)
 
@@ -154,6 +156,7 @@ class ExternalEvalDataset(Dataset):
             "attention_mask": self.attention_masks[idx],
             "token_count": self.attention_masks[idx].sum(),
             "sample_id": self.sample_ids[idx],
+            "cwe_id": str(self.cwe_ids[idx]),
             "cwe_embedding": self._get_cwe_embedding(str(self.cwe_ids[idx])),
             "label": torch.tensor(self.labels[idx], dtype=torch.float32),
         }

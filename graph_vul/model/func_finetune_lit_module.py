@@ -1,6 +1,7 @@
 """PyTorch Lightning module for UniXcoder fine-tuning."""
 
 import logging
+from pathlib import Path
 
 import pytorch_lightning as pl
 import torch
@@ -11,9 +12,25 @@ from graph_vul.config import (
     FINETUNE_ENCODER_LR,
     FINETUNE_HEAD_LR,
     LR_SCHEDULER_FACTOR,
+    MATCHING_ABLATION_MODE,
+    MATCHING_LOSS_LAMBDA,
+    MATCHING_NEGATIVES_PER_POSITIVE,
+    MATCHING_PROJECTION_DIM,
+    MATCHING_TRIPLET_MARGIN,
     MIN_LR,
+    PROCESSED_DIR,
+    SEED,
+    FUNC_SUBSET_CSV,
     WARMUP_EPOCHS,
     WEIGHT_DECAY,
+    DEBERTA_EMBEDDING_DIM,
+)
+from graph_vul.model.cwe_matching import (
+    CWEEmbeddingStore,
+    CWENegativeSampler,
+    build_matching_config,
+    candidate_cwe_ids_from_subset,
+    cosine_similarity_logits,
 )
 from graph_vul.model.func_finetune_model import FuncFinetuneModel
 
@@ -70,9 +87,24 @@ class FuncFinetuneLitModule(pl.LightningModule):
         focal_alpha: float = 0.25,
         head_dropout: float | None = None,
         freeze_encoder_fully: bool = False,
+        ablation_mode: str = MATCHING_ABLATION_MODE,
+        matching_projection_dim: int = MATCHING_PROJECTION_DIM,
+        matching_negatives_per_positive: int = MATCHING_NEGATIVES_PER_POSITIVE,
+        matching_loss_lambda: float = MATCHING_LOSS_LAMBDA,
+        matching_triplet_margin: float = MATCHING_TRIPLET_MARGIN,
+        cwe_embeddings_dir: str | Path = PROCESSED_DIR / "cwe_embeddings",
+        subset_csv: str | Path = FUNC_SUBSET_CSV,
+        matching_seed: int = SEED,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
+        self.matching_config = build_matching_config(
+            ablation_mode=ablation_mode,
+            projection_dim=matching_projection_dim,
+            negatives_per_positive=matching_negatives_per_positive,
+            loss_lambda=matching_loss_lambda,
+            triplet_margin=matching_triplet_margin,
+        )
         self.model = FuncFinetuneModel(
             graph_dim=graph_dim,
             num_node_types=num_node_types,
@@ -81,7 +113,14 @@ class FuncFinetuneLitModule(pl.LightningModule):
             fusion_method=fusion_method,
             final_graph_concat=final_graph_concat,
             dropout=head_dropout if head_dropout is not None else None,
+            matching_projection_dim=matching_projection_dim,
+            matching_config=self.matching_config,
         )
+        self.cwe_store = CWEEmbeddingStore(cwe_embeddings_dir=cwe_embeddings_dir, embedding_dim=DEBERTA_EMBEDDING_DIM)
+        candidate_cwe_ids = candidate_cwe_ids_from_subset(subset_csv)
+        if not candidate_cwe_ids:
+            candidate_cwe_ids = self.cwe_store.available_cwe_ids()
+        self.negative_sampler = CWENegativeSampler(candidate_cwe_ids=candidate_cwe_ids, seed=matching_seed)
         if focal_gamma > 0:
             self.criterion = BinaryFocalLoss(gamma=focal_gamma, alpha=focal_alpha)
             logger.info("Using focal loss: gamma=%.1f, alpha=%.2f", focal_gamma, focal_alpha)
@@ -145,21 +184,90 @@ class FuncFinetuneLitModule(pl.LightningModule):
         if self.current_epoch == self.hparams.freeze_encoder_epochs:
             self._unfreeze_encoder()
 
-    def _shared_step(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _compute_matching_losses(
+        self,
+        batch: dict,
+        outputs: dict[str, torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor, list[str], list[str]]:
+        device = outputs["logits"].device
+        labels = batch["label"]
+        vul_mask = labels > 0.5
+        zero = outputs["logits"].new_zeros(())
+        if not bool(vul_mask.any()):
+            return zero, zero, [], []
+
+        positive_cwe_ids = [str(cwe_id) for cwe_id, is_vul in zip(batch["cwe_id"], vul_mask.tolist()) if is_vul]
+        negative_cwe_ids: list[str] = []
+        negative_sources: list[str] = []
+        for positive_cwe_id in positive_cwe_ids:
+            for _ in range(self.matching_config.negatives_per_positive):
+                negative_cwe_id, source = self.negative_sampler.sample(
+                    positive_cwe_id=positive_cwe_id,
+                    use_hard_negatives=self.matching_config.use_hard_negatives,
+                )
+                negative_cwe_ids.append(negative_cwe_id)
+                negative_sources.append(source)
+
+        if not negative_cwe_ids:
+            return zero, zero, [], []
+
+        repeat_count = self.matching_config.negatives_per_positive
+        function_match = outputs["function_match"][vul_mask].repeat_interleave(repeat_count, dim=0)
+        positive_match = outputs["cwe_match"][vul_mask].repeat_interleave(repeat_count, dim=0)
+        negative_embeddings = self.cwe_store.stack(negative_cwe_ids, device=device)
+        negative_match = self.model.project_cwe_embeddings(negative_embeddings)
+
+        negative_loss = zero
+        if self.matching_config.use_negative_classification:
+            pos_logits = cosine_similarity_logits(function_match, positive_match)
+            neg_logits = cosine_similarity_logits(function_match, negative_match)
+            pos_loss = F.binary_cross_entropy_with_logits(pos_logits, torch.ones_like(pos_logits))
+            neg_loss = F.binary_cross_entropy_with_logits(neg_logits, torch.zeros_like(neg_logits))
+            negative_loss = 0.5 * (pos_loss + neg_loss)
+
+        triplet_loss = zero
+        if self.matching_config.use_triplet_loss:
+            triplet_loss = F.triplet_margin_loss(
+                function_match,
+                positive_match,
+                negative_match,
+                margin=self.matching_config.triplet_margin,
+                reduction="mean",
+            )
+        return negative_loss, triplet_loss, negative_cwe_ids, negative_sources
+
+    def _shared_step(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, float]]:
         graph_batch = batch.get("graph_data")
-        logits = self.model(
+        outputs = self.model(
             batch["input_ids"],
             batch["attention_mask"],
             batch["cwe_embedding"],
             graph_batch=graph_batch,
-        ).squeeze(-1)
-        loss = self.criterion(logits, batch["label"])
+            return_matching_outputs=True,
+        )
+        logits = outputs["logits"].squeeze(-1)
+        bce_loss = self.criterion(logits, batch["label"])
+        negative_loss, triplet_loss, negative_cwe_ids, negative_sources = self._compute_matching_losses(batch, outputs)
+        loss = bce_loss + self.matching_config.loss_lambda * (negative_loss + triplet_loss)
         preds = (logits >= self.threshold).long()
-        return loss, preds, batch["label"].long()
+        aux_metrics = {
+            "loss_bce": float(bce_loss.detach()),
+            "loss_wrong_cwe": float(negative_loss.detach()),
+            "loss_triplet": float(triplet_loss.detach()),
+            "negatives_sampled": float(len(negative_cwe_ids)),
+            "hard_negative_rate": float(sum(source != "random" for source in negative_sources) / max(len(negative_sources), 1))
+            if negative_sources else 0.0,
+        }
+        return loss, preds, batch["label"].long(), aux_metrics
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
-        loss, preds, labels = self._shared_step(batch)
+        loss, preds, labels, aux_metrics = self._shared_step(batch)
         self.log("train_loss", loss.detach(), prog_bar=True, batch_size=len(labels))
+        self.log("train_loss_bce", aux_metrics["loss_bce"], on_step=False, on_epoch=True, batch_size=len(labels))
+        self.log("train_loss_wrong_cwe", aux_metrics["loss_wrong_cwe"], on_step=False, on_epoch=True, batch_size=len(labels))
+        self.log("train_loss_triplet", aux_metrics["loss_triplet"], on_step=False, on_epoch=True, batch_size=len(labels))
+        self.log("train_matching_negatives", aux_metrics["negatives_sampled"], on_step=False, on_epoch=True, batch_size=len(labels))
+        self.log("train_hard_negative_rate", aux_metrics["hard_negative_rate"], on_step=False, on_epoch=True, batch_size=len(labels))
         self.train_accuracy.update(preds, labels)
         self.train_precision.update(preds, labels)
         self.train_recall.update(preds, labels)
@@ -219,7 +327,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self._reset_low_token_tracking()
 
     def validation_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> None:
-        _, preds, labels = self._shared_step(batch)
+        _, preds, labels, _ = self._shared_step(batch)
         short_f1_metric = None
         short_f1_name = None
         if dataloader_idx == 0:
@@ -251,7 +359,7 @@ class FuncFinetuneLitModule(pl.LightningModule):
         self._current_test_prefix = prefix
 
     def test_step(self, batch: dict, batch_idx: int) -> None:
-        _, preds, labels = self._shared_step(batch)
+        _, preds, labels, _ = self._shared_step(batch)
         prefix = getattr(self, "_current_test_prefix", "test")
         self.test_accuracy.update(preds, labels)
         self.test_precision.update(preds, labels)
@@ -265,13 +373,19 @@ class FuncFinetuneLitModule(pl.LightningModule):
 
     def predict_step(self, batch: dict, batch_idx: int) -> dict:
         graph_batch = batch.get("graph_data")
-        logits = self.model(
+        outputs = self.model(
             batch["input_ids"],
             batch["attention_mask"],
             batch["cwe_embedding"],
             graph_batch=graph_batch,
-        ).squeeze(-1)
-        return {"logits": logits, "labels": batch["label"].long()}
+            return_matching_outputs=True,
+        )
+        logits = outputs["logits"].squeeze(-1)
+        return {
+            "logits": logits,
+            "labels": batch["label"].long(),
+            "function_match": outputs["function_match"],
+        }
 
     def configure_optimizers(self) -> dict:
         encoder_params = list(self.model.encoder.parameters())

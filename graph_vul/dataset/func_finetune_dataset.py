@@ -142,6 +142,7 @@ class FuncFinetuneDataset(Dataset):
             "attention_mask": self.attention_masks[idx],
             "token_count": self.attention_masks[idx].sum(),
             "sample_id": torch.tensor(int(self.sample_ids[idx]), dtype=torch.long),
+            "cwe_id": str(self.cwe_ids[idx]),
             "cwe_embedding": self._get_cwe_embedding(str(self.cwe_ids[idx])),
             "label": torch.tensor(self.labels[idx], dtype=torch.float32),
         }
@@ -160,6 +161,8 @@ def finetune_graph_collate(batch: list[dict]) -> dict:
     for key in keys:
         if key == "graph_data":
             result[key] = Batch.from_data_list([item[key] for item in batch])
-        else:
+        elif torch.is_tensor(batch[0][key]):
             result[key] = torch.stack([item[key] for item in batch])
+        else:
+            result[key] = [item[key] for item in batch]
     return result

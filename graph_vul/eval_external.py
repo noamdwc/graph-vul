@@ -22,6 +22,11 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
+from graph_vul.analysis.cwe_matching_report import (
+    candidate_cwe_matrix,
+    retrieval_columns,
+    write_summary_artifacts,
+)
 from graph_vul.config import (
     FINETUNE_BATCH_SIZE,
     FINETUNE_CHECKPOINT_PATH,
@@ -29,6 +34,7 @@ from graph_vul.config import (
     UNIXCODER_MODEL_NAME,
 )
 from graph_vul.dataset.external_datasets import EXTERNAL_DATASETS, ExternalEvalDataset
+from graph_vul.model.cwe_matching import CWEEmbeddingStore
 from graph_vul.model.func_finetune_lit_module import FuncFinetuneLitModule
 
 logger = logging.getLogger(__name__)
@@ -90,9 +96,9 @@ def _log_unseen_cwes(
     return unseen, total
 
 
-def _load_bigvul_test_metrics() -> dict | None:
+def _load_bigvul_test_metrics(predictions_dir: Path) -> dict | None:
     """Try to load BigVul test predictions and compute comparable metrics."""
-    test_path = BIGVUL_PREDICTIONS_DIR / "test_predictions.csv"
+    test_path = predictions_dir / "test_predictions.csv"
     if not test_path.exists():
         logger.info("BigVul test predictions not found at %s — skipping comparison", test_path)
         return None
@@ -154,11 +160,16 @@ def evaluate_external(
     model.to(device)
     model.eval()
     model.freeze()
+    ablation_mode = str(model.hparams.get("ablation_mode", "E0")).lower()
+    output_dir = output_dir / ablation_mode
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cwe_store = CWEEmbeddingStore(cwe_embeddings_dir=cwe_embeddings_dir, embedding_dim=model.model.cwe_projection.in_features)
+    candidate_ids, candidate_match = candidate_cwe_matrix(cwe_store, model.model, device)
 
     combined_metrics: dict[str, dict] = {}
 
     # BigVul test baseline (if available)
-    bigvul_metrics = _load_bigvul_test_metrics()
+    bigvul_metrics = _load_bigvul_test_metrics(BIGVUL_PREDICTIONS_DIR / ablation_mode)
     if bigvul_metrics is not None:
         combined_metrics["bigvul_test"] = bigvul_metrics
 
@@ -189,6 +200,7 @@ def evaluate_external(
         probs_parts: list[torch.Tensor] = []
         preds_parts: list[torch.Tensor] = []
         token_lengths_parts: list[torch.Tensor] = []
+        function_match_parts: list[torch.Tensor] = []
 
         progress = tqdm(loader, desc=f"Evaluating {dataset_name}", unit="batch")
         with torch.inference_mode():
@@ -197,7 +209,14 @@ def evaluate_external(
                 attention_mask = batch["attention_mask"].to(device)
                 cwe_embedding = batch["cwe_embedding"].to(device)
 
-                logits = model(input_ids, attention_mask, cwe_embedding, graph_batch=None).squeeze(-1)
+                outputs = model.model(
+                    input_ids,
+                    attention_mask,
+                    cwe_embedding,
+                    graph_batch=None,
+                    return_matching_outputs=True,
+                )
+                logits = outputs["logits"].squeeze(-1)
                 probs = torch.sigmoid(logits)
                 preds = (probs >= threshold).long()
 
@@ -205,6 +224,7 @@ def evaluate_external(
                 probs_parts.append(probs.detach().cpu())
                 preds_parts.append(preds.detach().cpu())
                 token_lengths_parts.append(batch["attention_mask"].sum(dim=1).detach().cpu())
+                function_match_parts.append(outputs["function_match"].detach().cpu())
 
         # Build predictions DataFrame
         pred_df = df.copy()
@@ -212,6 +232,16 @@ def evaluate_external(
         pred_df["prob"] = torch.cat(probs_parts).numpy()
         pred_df["logit"] = torch.cat(logits_parts).numpy()
         pred_df["token_length"] = torch.cat(token_lengths_parts).numpy()
+        pred_df["y_true"] = pred_df["vul"].astype(int)
+        pred_df["ablation_mode"] = ablation_mode.upper()
+        retrieval = retrieval_columns(
+            function_match=torch.cat(function_match_parts).to(device),
+            candidate_ids=candidate_ids,
+            candidate_match=candidate_match,
+            true_cwe_ids=pred_df["cwe_id"].astype(str).tolist(),
+        )
+        for column, values in retrieval.items():
+            pred_df[column] = values
 
         # Save predictions
         pred_path = output_dir / f"{dataset_name}_predictions.csv"
@@ -219,10 +249,16 @@ def evaluate_external(
         logger.info("Wrote %s predictions: %d rows -> %s", dataset_name, len(pred_df), pred_path)
 
         # Compute and save per-dataset metrics
-        y_true = pred_df["vul"].values
+        y_true = pred_df["y_true"].values
         y_pred = pred_df["y_pred"].values
         prob_vals = pred_df["prob"].values
         ds_metrics = compute_metrics(y_true, y_pred, prob_vals)
+        summary_metrics = write_summary_artifacts(pred_df, output_dir=output_dir, prefix=dataset_name)
+        ds_metrics.update({
+            "retrieval_top1": summary_metrics.get("retrieval_top1"),
+            "retrieval_top3": summary_metrics.get("retrieval_top3"),
+            "ablation_mode": ablation_mode.upper(),
+        })
 
         metrics_path = output_dir / f"{dataset_name}_metrics.json"
         with metrics_path.open("w") as f:

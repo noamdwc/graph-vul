@@ -24,7 +24,13 @@ from graph_vul.config import (
     FUNC_SPLITS_DIR,
     FUNC_SUBSET_CSV,
     HELDOUT_CWE_IDS,
+    PROCESSED_DIR,
     UNIXCODER_MODEL_NAME,
+)
+from graph_vul.analysis.cwe_matching_report import (
+    candidate_cwe_matrix,
+    retrieval_columns,
+    write_summary_artifacts,
 )
 from graph_vul.dataset.func_finetune_dataset import (
     FuncFinetuneDataset,
@@ -32,6 +38,7 @@ from graph_vul.dataset.func_finetune_dataset import (
     finetune_graph_collate,
     load_split_assignments,
 )
+from graph_vul.model.cwe_matching import CWEEmbeddingStore
 from graph_vul.model.func_finetune_lit_module import FuncFinetuneLitModule
 
 logger = logging.getLogger(__name__)
@@ -75,6 +82,8 @@ def export_split_predictions(
     tokenizer: AutoTokenizer,
     split: str,
     output_dir: str | Path,
+    candidate_ids: list[str],
+    candidate_match: torch.Tensor,
     batch_size: int = FINETUNE_BATCH_SIZE,
     threshold: float = 0.5,
     subset_csv: str | Path = FUNC_SUBSET_CSV,
@@ -110,6 +119,7 @@ def export_split_predictions(
     probs_parts: list[torch.Tensor] = []
     preds_parts: list[torch.Tensor] = []
     token_lengths_parts: list[torch.Tensor] = []
+    function_match_parts: list[torch.Tensor] = []
 
     model.eval()
     model.freeze()
@@ -124,7 +134,14 @@ def export_split_predictions(
             if graph_batch is not None:
                 graph_batch = graph_batch.to(device)
 
-            logits = model(input_ids, attention_mask, cwe_embedding, graph_batch=graph_batch).squeeze(-1)
+            outputs = model.model(
+                input_ids,
+                attention_mask,
+                cwe_embedding,
+                graph_batch=graph_batch,
+                return_matching_outputs=True,
+            )
+            logits = outputs["logits"].squeeze(-1)
             probs = torch.sigmoid(logits)
             preds = (probs >= threshold).long()
 
@@ -132,6 +149,7 @@ def export_split_predictions(
             probs_parts.append(probs.detach().cpu())
             preds_parts.append(preds.detach().cpu())
             token_lengths_parts.append(batch["attention_mask"].sum(dim=1).detach().cpu())
+            function_match_parts.append(outputs["function_match"].detach().cpu())
 
     result_df = metadata_df.copy()
     result_df["y_true"] = result_df["label"].astype(int)
@@ -140,10 +158,20 @@ def export_split_predictions(
     result_df["y_pred"] = torch.cat(preds_parts).numpy()
     result_df["score"] = result_df["prob"]
     result_df["token_length"] = torch.cat(token_lengths_parts).numpy()
+    retrieval = retrieval_columns(
+        function_match=torch.cat(function_match_parts).to(device),
+        candidate_ids=candidate_ids,
+        candidate_match=candidate_match,
+        true_cwe_ids=result_df["cwe_id"].astype(str).tolist(),
+    )
+    for column, values in retrieval.items():
+        result_df[column] = values
+    result_df["ablation_mode"] = model.hparams.get("ablation_mode", "E0")
 
     output_path = Path(output_dir) / f"{split}_predictions.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_csv(output_path, index=False)
+    write_summary_artifacts(result_df, output_dir=output_dir, prefix=split)
     logger.info("Wrote %s predictions: %d rows -> %s", split, len(result_df), output_path)
     return output_path
 
@@ -163,6 +191,10 @@ def export_predictions(
     tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
     model = FuncFinetuneLitModule.load_from_checkpoint(checkpoint_path, map_location=device)
     model.to(device)
+    ablation_mode = str(model.hparams.get("ablation_mode", "E0")).lower()
+    effective_output_dir = Path(output_dir) / ablation_mode
+    cwe_store = CWEEmbeddingStore(PROCESSED_DIR / "cwe_embeddings", model.model.cwe_projection.in_features)
+    candidate_ids, candidate_match = candidate_cwe_matrix(cwe_store, model.model, device)
     available = set(available_splits(splits_dir))
 
     outputs: dict[str, str] = {}
@@ -174,7 +206,9 @@ def export_predictions(
             model=model,
             tokenizer=tokenizer,
             split=split,
-            output_dir=output_dir,
+            output_dir=effective_output_dir,
+            candidate_ids=candidate_ids,
+            candidate_match=candidate_match,
             batch_size=batch_size,
             threshold=threshold,
             subset_csv=subset_csv,
@@ -187,9 +221,10 @@ def export_predictions(
     manifest = {
         "checkpoint_path": str(checkpoint_path),
         "threshold": threshold,
+        "ablation_mode": ablation_mode.upper(),
         "splits": outputs,
     }
-    manifest_path = Path(output_dir) / "manifest.json"
+    manifest_path = effective_output_dir / "manifest.json"
     with manifest_path.open("w") as handle:
         json.dump(manifest, handle, indent=2)
     logger.info("Wrote export manifest to %s", manifest_path)
