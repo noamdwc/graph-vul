@@ -91,6 +91,16 @@ class FuncFinetuneModel(nn.Module):
         self.function_projection = nn.Linear(encoder_dim, matching_projection_dim)
         self.cwe_projection = nn.Linear(cwe_dim, matching_projection_dim)
 
+    def _project_function_match(self, pooled: torch.Tensor) -> torch.Tensor:
+        projection_dtype = self.function_projection.weight.dtype
+        projected = self.function_projection(pooled.to(dtype=projection_dtype))
+        return torch.nn.functional.normalize(projected, dim=-1)
+
+    def _project_cwe_match(self, cwe_embedding: torch.Tensor) -> torch.Tensor:
+        projection_dtype = self.cwe_projection.weight.dtype
+        projected = self.cwe_projection(cwe_embedding.to(dtype=projection_dtype))
+        return torch.nn.functional.normalize(projected, dim=-1)
+
     def _register_fusion_hooks(self) -> None:
         """Register forward hooks on selected encoder layers for fusion."""
         for handle in self._fusion_hooks:
@@ -163,8 +173,8 @@ class FuncFinetuneModel(nn.Module):
         parts.append(cwe_embedding)
         fused = torch.cat(parts, dim=-1)
         logits = self.head(fused)
-        function_match = torch.nn.functional.normalize(self.function_projection(pooled), dim=-1)
-        cwe_match = torch.nn.functional.normalize(self.cwe_projection(cwe_embedding), dim=-1)
+        function_match = self._project_function_match(pooled)
+        cwe_match = self._project_cwe_match(cwe_embedding)
         return {
             "logits": logits,
             "pooled": pooled,
@@ -173,7 +183,7 @@ class FuncFinetuneModel(nn.Module):
         }
 
     def project_cwe_embeddings(self, cwe_embedding: torch.Tensor) -> torch.Tensor:
-        return torch.nn.functional.normalize(self.cwe_projection(cwe_embedding), dim=-1)
+        return self._project_cwe_match(cwe_embedding)
 
     def forward(
         self,
