@@ -31,7 +31,7 @@ from graph_vul.config import (
     FINETUNE_BATCH_SIZE,
     FINETUNE_CHECKPOINT_PATH,
     PROCESSED_DIR,
-    UNIXCODER_MODEL_NAME,
+    CODE_MODEL_NAME,
 )
 from graph_vul.dataset.external_datasets import EXTERNAL_DATASETS, ExternalEvalDataset
 from graph_vul.model.cwe_matching import CWEEmbeddingStore
@@ -155,7 +155,9 @@ def evaluate_external(
 
     device = _device()
     logger.info("Loading checkpoint from %s on %s", checkpoint_path, device)
-    tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     model = FuncFinetuneLitModule.load_from_checkpoint(str(checkpoint_path), map_location=device)
     model.to(device)
     model.eval()

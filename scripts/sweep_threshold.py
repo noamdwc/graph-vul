@@ -32,7 +32,9 @@ def sweep_and_evaluate(
         cfg.FUNC_SPLITS_DIR = cfg.DATA_DIR / "partitions" / partition / "splits"
         logger.info("Using partition '%s'", partition)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.UNIXCODER_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.CODE_MODEL_NAME)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     split_names = available_splits(cfg.FUNC_SPLITS_DIR)
 
     # Load model from checkpoint

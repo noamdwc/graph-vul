@@ -25,7 +25,7 @@ from graph_vul.config import (
     FUNC_SUBSET_CSV,
     HELDOUT_CWE_IDS,
     PROCESSED_DIR,
-    UNIXCODER_MODEL_NAME,
+    CODE_MODEL_NAME,
 )
 from graph_vul.analysis.cwe_matching_report import (
     candidate_cwe_matrix,
@@ -189,7 +189,9 @@ def export_predictions(
 ) -> None:
     device = _device()
     logger.info("Loading checkpoint from %s on %s", checkpoint_path, device)
-    tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     model = FuncFinetuneLitModule.load_from_checkpoint(checkpoint_path, map_location=device)
     model.to(device)
     ablation_mode = str(model.hparams.get("ablation_mode", "E0")).lower()
