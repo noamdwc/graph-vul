@@ -71,8 +71,8 @@ class FuncFinetuneModel(nn.Module):
         # modules, and head are fp32; a mixed dtype at the fusion residual
         # breaks downstream Linear ops. Mixed precision at train time is
         # handled by Lightning's ``precision=bf16-mixed`` instead.
-        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32)
-        encoder_dim = self.encoder.config.hidden_size  # 768
+        self.encoder = AutoModel.from_pretrained(model_name, dtype=torch.float32)
+        encoder_dim = self.encoder.config.hidden_size
         self.graph_dim = graph_dim
         self.matching_config = matching_config or build_matching_config()
         if dropout is None:
