@@ -16,12 +16,12 @@ from torch_geometric.data import Batch, Data
 from transformers import AutoTokenizer
 
 from graph_vul.config import (
+    CODE_MODEL_NAME,
     DEBERTA_EMBEDDING_DIM,
     FUNC_SPLITS_DIR,
     FUNC_SUBSET_CSV,
     GRAPH_ARTIFACTS_DIR,
     PROCESSED_DIR,
-    UNIXCODER_MODEL_NAME,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,7 +77,16 @@ class FuncFinetuneDataset(Dataset):
         if tokenizer is not None:
             self.tokenizer = tokenizer
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
+            self.tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+
+        # Qwen3 ships without a pad token; reuse EOS for right-padding.
+        # attention_mask still distinguishes real vs pad, so last-non-pad-token
+        # pooling and the loss mask stay correct. getattr-guarded so test fakes
+        # without a pad_token attribute keep working.
+        if getattr(self.tokenizer, "pad_token", None) is None and getattr(
+            self.tokenizer, "eos_token", None
+        ) is not None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Load subset metadata
         subset = pd.read_csv(subset_csv, usecols=["sample_id", "func_before", "cwe_id", "vul"])
