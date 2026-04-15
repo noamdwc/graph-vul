@@ -34,7 +34,7 @@ from graph_vul.config import (
     MATCHING_PROJECTION_DIM,
     MATCHING_TRIPLET_MARGIN,
     SEED,
-    UNIXCODER_MODEL_NAME,
+    CODE_MODEL_NAME,
 )
 from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, available_splits, finetune_graph_collate
 from graph_vul.model.func_finetune_lit_module import FuncFinetuneLitModule
@@ -152,8 +152,11 @@ def train(
             "graph_hidden_dim": GRAPH_HIDDEN_DIM,
         }
 
-    # Shared tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
+    # Shared tokenizer — fine-tune backbone is Qwen3-0.6B; the frozen baseline
+    # path still uses UNIXCODER_MODEL_NAME.
+    tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     # Datasets
     split_names = available_splits(FUNC_SPLITS_DIR)
@@ -233,7 +236,8 @@ def train(
     # Logger
     default_run_name = "func-graph-finetune" if use_graph else "func-finetune"
     run_name = run_tag or default_run_name
-    model_name = "func-graph-finetune-unixcoder-rgcn" if use_graph else "func-finetune-unixcoder"
+    # Display label for W&B; reflects the active fine-tune backbone.
+    model_name = "func-graph-finetune-qwen3-rgcn" if use_graph else "func-finetune-qwen3"
     wandb_logger = WandbLogger(
         project="graph-vul",
         name=run_name,
