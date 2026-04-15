@@ -38,8 +38,10 @@ All variants share: 30 epochs (crashed 12–15 in, after final eval), BS=8, enco
 
 ## Conclusion
 
-E2 is the recommended configuration going forward, **pending multi-seed confirmation**. Hard-negative mining is the one component that clearly separates the matching variants from each other and should be kept regardless; random-negative triplet (E3) can be dropped.
+E2 is the recommended configuration going forward. Hard-negative mining is the one component that clearly separates the matching variants from each other; random-negative triplet (E3) has been dropped.
+
+As of 2026-04-15, **E2 is the default** for `MATCHING_ABLATION_MODE` in `graph_vul/config.py`. `train_finetune.py` and all downstream stages inherit this default; pass `--ablation-mode E0` to reproduce the baseline.
 
 ## Next step
 
-Rerun E0, E2, E4 with ≥3 seeds (e.g. 42, 43, 44) and compare means with bootstrap CIs via `graph_vul.analysis.post_experiment_analysis` before treating E2 as established.
+Rerun E0, E2, E4 with ≥3 seeds (e.g. 42, 43, 44) via the multi-seed sweep in `notebooks/colab_cwe_matching_ablation.ipynb` and compare means with bootstrap CIs via `graph_vul.analysis.post_experiment_analysis` to firm up the E2-vs-E4 gap.
