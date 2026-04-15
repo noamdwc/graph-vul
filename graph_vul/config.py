@@ -99,6 +99,14 @@ UNIXCODER_MODEL_NAME = "microsoft/unixcoder-base"
 UNIXCODER_EMBEDDING_DIM = 768
 FUNC_MAX_WHITESPACE_TOKENS = 512  # filter functions >= 513
 
+# Backbone for fine-tuning: was UniXcoder-base (768d, 12L, bidirectional),
+# now Qwen3-0.6B (1024d, 28L, decoder-only causal).
+# UNIXCODER_* constants above are retained for the frozen-embedding baseline
+# path (embed_functions.py, func_classifier.py); they are not used by the
+# fine-tune model.
+CODE_MODEL_NAME = "Qwen/Qwen3-0.6B"
+CODE_EMBEDDING_DIM = 1024
+
 # Function baseline paths
 FUNC_SUBSET_CSV = DATA_DIR / "func_subset.csv"
 FUNC_SUBSET_MANIFEST = DATA_DIR / "func_subset_manifest.json"
