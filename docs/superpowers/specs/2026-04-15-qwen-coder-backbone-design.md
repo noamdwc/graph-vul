@@ -25,8 +25,8 @@ Keep the current data flow and training logic as close as possible. Do not redes
 
 ### 1. `graph_vul/config.py`
 
-- Rename `UNIXCODER_MODEL_NAME` → `CODE_MODEL_NAME = "Qwen/Qwen3-0.6B"`.
-- Rename `UNIXCODER_EMBEDDING_DIM` → `CODE_EMBEDDING_DIM = 1024`.
+- **Add** `CODE_MODEL_NAME = "Qwen/Qwen3-0.6B"` and `CODE_EMBEDDING_DIM = 1024`.
+- **Keep** `UNIXCODER_MODEL_NAME` and `UNIXCODER_EMBEDDING_DIM` — they remain the identifiers for the frozen baseline path (`graph_vul/pipeline/embed_functions.py`, `graph_vul/pipeline/embed_utils.load_unixcoder`, `graph_vul/model/func_classifier.py`). Renaming them would break the baseline; adding a parallel constant keeps the two paths cleanly separated.
 - Leave `max_length = 512`, `FUNC_MLP_*`, `MATCHING_*`, `GRAPH_*` untouched.
 - Add a single anchor comment: `# Backbone: was UniXcoder-base (768d, 12L), now Qwen3-0.6B (1024d, 28L).`
 
@@ -99,6 +99,6 @@ Every file above reads `encoder_dim` or `CODE_EMBEDDING_DIM` via the model or co
 ## Acceptance criteria
 
 - `dvc repro train` (or the equivalent fine-tune entrypoint) starts and completes one epoch on L4 without OOM.
-- No reference to `UNIXCODER_MODEL_NAME` or `UNIXCODER_EMBEDDING_DIM` remains in `graph_vul/model/` or `graph_vul/dataset/`.
+- Every fine-tune-path tokenizer load (`train_finetune.py`, `eval_external.py`, `export_finetune_predictions.py`, `graph_vul/model/func_finetune_model.py`, `graph_vul/dataset/func_finetune_dataset.py`, `graph_vul/dataset/external_datasets.py`, `scripts/sweep_threshold.py`) uses `CODE_MODEL_NAME`. The baseline path (`graph_vul/pipeline/embed_functions.py`, `graph_vul/pipeline/embed_utils.load_unixcoder`, `graph_vul/model/func_classifier.py`) still uses `UNIXCODER_*` — untouched.
 - Every architectural change in the three edited files carries a short comment explaining *why* (causal pooling, Qwen layer path, pad-token fallback).
 - Training logs show `model_name = "Qwen/Qwen3-0.6B"` and fusion modules attached to 28 layers.
