@@ -14,6 +14,7 @@ from torch_geometric.data import Batch
 from transformers import AutoModel
 
 from graph_vul.config import (
+    CODE_MODEL_NAME,
     DEBERTA_EMBEDDING_DIM,
     FUNC_MLP_DROPOUT,
     FUNC_MLP_HIDDEN_DIM,
@@ -21,11 +22,27 @@ from graph_vul.config import (
     GRAPH_HIDDEN_DIM,
     GRAPH_NODE_EMBED_DIM,
     MATCHING_PROJECTION_DIM,
-    UNIXCODER_MODEL_NAME,
 )
 from graph_vul.model.gated_residual_fusion import FUSION_REGISTRY
 from graph_vul.model.cwe_matching import MatchingConfig, build_matching_config
 from graph_vul.model.graph_encoder import FunctionGraphEncoder
+
+
+def _encoder_layers(encoder):
+    """Return the list of transformer blocks regardless of backbone family.
+
+    - AutoModel on Qwen3 returns ``Qwen3Model`` directly, which exposes
+      ``.layers`` at the top level.
+    - A CausalLM wrapper would expose them one level deeper at ``.model.layers``.
+    - RoBERTa-style models such as UniXcoder expose them at ``encoder.layer``.
+
+    The fusion-hook contract (tuple or tensor output) is the same for all.
+    """
+    if hasattr(encoder, "layers"):
+        return encoder.layers
+    if hasattr(encoder, "model") and hasattr(encoder.model, "layers"):
+        return encoder.model.layers
+    return encoder.encoder.layer
 
 
 class FuncFinetuneModel(nn.Module):
@@ -33,7 +50,7 @@ class FuncFinetuneModel(nn.Module):
 
     def __init__(
         self,
-        model_name: str = UNIXCODER_MODEL_NAME,
+        model_name: str = CODE_MODEL_NAME,
         cwe_dim: int = DEBERTA_EMBEDDING_DIM,
         hidden_dim: int = FUNC_MLP_HIDDEN_DIM,
         dropout: float | None = FUNC_MLP_DROPOUT,
@@ -50,7 +67,11 @@ class FuncFinetuneModel(nn.Module):
         matching_config: MatchingConfig | None = None,
     ) -> None:
         super().__init__()
-        self.encoder = AutoModel.from_pretrained(model_name)
+        # Force fp32 on load: Qwen3 ships as bf16, but graph encoder, fusion
+        # modules, and head are fp32; a mixed dtype at the fusion residual
+        # breaks downstream Linear ops. Mixed precision at train time is
+        # handled by Lightning's ``precision=bf16-mixed`` instead.
+        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch.float32)
         encoder_dim = self.encoder.config.hidden_size  # 768
         self.graph_dim = graph_dim
         self.matching_config = matching_config or build_matching_config()
@@ -107,7 +128,9 @@ class FuncFinetuneModel(nn.Module):
             handle.remove()
         self._fusion_hooks.clear()
 
-        encoder_layers = self.encoder.encoder.layer
+        # Backbone-agnostic layer access: Qwen3 uses encoder.model.layers,
+        # RoBERTa-style models use encoder.encoder.layer.
+        encoder_layers = _encoder_layers(self.encoder)
         for layer_idx in self.fusion_layers:
             fusion_mod = self.fusion_modules[str(layer_idx)]
 
@@ -161,9 +184,12 @@ class FuncFinetuneModel(nn.Module):
         # Clear hook state
         self._current_graph_emb = None
 
-        # Mean pool over non-padding tokens
-        mask = attention_mask.unsqueeze(-1).float()  # [B, seq_len, 1]
-        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)  # [B, 768]
+        # Last-non-pad-token pooling.
+        # Qwen3 is a causal (left-to-right) LM, so only the final non-pad token
+        # has attended to the entire function. Mean-over-non-pad would mix
+        # causally-truncated representations and is not idiomatic for causal LMs.
+        last_idx = attention_mask.sum(dim=1) - 1  # [B]
+        pooled = hidden[torch.arange(hidden.size(0), device=hidden.device), last_idx]  # [B, hidden]
 
         parts = [pooled]
 
