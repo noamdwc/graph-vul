@@ -14,10 +14,10 @@ from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 
 from graph_vul.config import (
+    CODE_MODEL_NAME,
     DEBERTA_EMBEDDING_DIM,
     FUNC_MAX_WHITESPACE_TOKENS,
     PROCESSED_DIR,
-    UNIXCODER_MODEL_NAME,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,13 @@ class ExternalEvalDataset(Dataset):
         if tokenizer is not None:
             self.tokenizer = tokenizer
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(UNIXCODER_MODEL_NAME)
+            self.tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+
+        # Qwen3 has no pad token by default; EOS stands in for right padding.
+        if getattr(self.tokenizer, "pad_token", None) is None and getattr(
+            self.tokenizer, "eos_token", None
+        ) is not None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.sample_ids = df["sample_id"].values
         self.cwe_ids = df["cwe_id"].values
