@@ -35,6 +35,7 @@ from graph_vul.config import (
     MATCHING_TRIPLET_MARGIN,
     SEED,
     CODE_MODEL_NAME,
+    WEIGHT_DECAY,
 )
 from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, available_splits, finetune_graph_collate
 from graph_vul.model.func_finetune_lit_module import FuncFinetuneLitModule
@@ -123,6 +124,7 @@ def train(
     focal_alpha: float = 0.25,
     head_dropout: float | None = None,
     freeze_encoder_fully: bool = False,
+    weight_decay: float = WEIGHT_DECAY,
     ablation_mode: str = MATCHING_ABLATION_MODE,
     matching_projection_dim: int = MATCHING_PROJECTION_DIM,
     matching_negatives_per_positive: int = MATCHING_NEGATIVES_PER_POSITIVE,
@@ -226,6 +228,7 @@ def train(
         focal_alpha=focal_alpha,
         head_dropout=head_dropout,
         freeze_encoder_fully=freeze_encoder_fully,
+        weight_decay=weight_decay,
         ablation_mode=ablation_mode,
         matching_projection_dim=matching_projection_dim,
         matching_negatives_per_positive=matching_negatives_per_positive,
@@ -260,6 +263,7 @@ def train(
             "focal_alpha": focal_alpha,
             "head_dropout": head_dropout,
             "freeze_encoder_fully": freeze_encoder_fully,
+            "weight_decay": weight_decay,
             "ablation_mode": ablation_mode,
             "matching_projection_dim": matching_projection_dim,
             "matching_negatives_per_positive": matching_negatives_per_positive,
@@ -360,6 +364,7 @@ if __name__ == "__main__":
     parser.add_argument("--focal-alpha", type=float, default=0.25, help="Focal loss alpha (positive class weight)")
     parser.add_argument("--head-dropout", type=float, default=None, help="Head dropout (default: use config FUNC_MLP_DROPOUT)")
     parser.add_argument("--freeze-encoder-fully", action="store_true", help="Keep encoder frozen for all epochs (head-only training)")
+    parser.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY, help="AdamW weight decay")
     parser.add_argument("--ablation-mode", type=str, default=MATCHING_ABLATION_MODE, choices=["E0", "E1", "E2", "E3", "E4"])
     parser.add_argument("--matching-projection-dim", type=int, default=MATCHING_PROJECTION_DIM)
     parser.add_argument("--matching-negatives-per-positive", type=int, default=MATCHING_NEGATIVES_PER_POSITIVE)
@@ -382,6 +387,7 @@ if __name__ == "__main__":
         focal_alpha=args.focal_alpha,
         head_dropout=args.head_dropout,
         freeze_encoder_fully=args.freeze_encoder_fully,
+        weight_decay=args.weight_decay,
         ablation_mode=args.ablation_mode,
         matching_projection_dim=args.matching_projection_dim,
         matching_negatives_per_positive=args.matching_negatives_per_positive,
