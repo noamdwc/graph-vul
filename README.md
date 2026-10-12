@@ -17,7 +17,7 @@ Versioned CWE catalog + learned NONE → pair head → all candidate logits
 
 The strict threshold comparison resolves ties to NONE. All valid annotated CWEs are positives; benign functions match NONE. Triplet experiments add random or model-scored incorrect candidates while excluding every positive label.
 
-**Results status:** historical experiments are exploratory and superseded. No headline performance is claimed for this implementation. CPU contract tests include training, checkpoint selection, calibration, graph-enabled external scoring, exports and report generation with a small synthetic encoder. The real UniXcoder pilot and the four-configuration matrix with seeds **42, 43, 44** require GPU execution. See [rerun status](docs/RERUN_STATUS.md) for completed preparation stages and exact pending work.
+**Results status:** historical experiments are exploratory and superseded. No headline performance is claimed for this implementation. CPU contract tests include training, checkpoint selection, calibration, graph-enabled external scoring, exports and report generation with a small synthetic encoder. A bounded real UniXcoder pilot also completed all four configurations on CPU, including calibration, internal/external exports and a diagnostic report. The full four-configuration matrix with seeds **42, 43, 44** remains pending GPU execution. See [rerun status](docs/RERUN_STATUS.md) for completed preparation stages and exact pending work.
 
 The controlled comparison is:
 
