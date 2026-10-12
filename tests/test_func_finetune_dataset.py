@@ -58,7 +58,6 @@ def test_finetune_dataset_exposes_sample_id_and_token_count(tmp_path):
         tokenizer=_FakeTokenizer(),
         max_length=8,
         subset_csv=subset_csv,
-        cwe_embeddings_dir=cwe_dir,
         splits_dir=splits_dir,
     )
 
