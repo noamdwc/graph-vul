@@ -17,7 +17,7 @@ from graph_vul.artifacts import (
     preparation_identity,
     write_json,
 )
-from graph_vul.config import CODE_MODEL_NAME, GRAPH_HIDDEN_DIM
+from graph_vul.config import CODE_MODEL_NAME, CODE_MODEL_REVISION, GRAPH_HIDDEN_DIM
 from graph_vul.dataset.func_finetune_dataset import (
     FuncFinetuneDataset,
     finetune_graph_collate,
@@ -60,7 +60,9 @@ def train(
     use_graph = ablation_mode != "pair"
     node_vocab = json.loads((root / "graphs/node_type_vocab.json").read_text())
     edge_vocab = json.loads((root / "graphs/edge_type_vocab.json").read_text())
-    tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(
+        CODE_MODEL_NAME, revision=CODE_MODEL_REVISION
+    )
     datasets = {
         split: FuncFinetuneDataset(
             split,
@@ -121,9 +123,7 @@ def train(
         matching_loss_lambda=matching_loss_lambda,
         matching_triplet_margin=matching_triplet_margin,
     )
-    provenance["encoder_revision"] = getattr(
-        module.model.encoder.config, "_commit_hash", None
-    )
+    provenance["encoder_revision"] = CODE_MODEL_REVISION
     # All experiments use the same epoch budget. Select on annotation-independent validation PR-AUC.
     checkpoint = ModelCheckpoint(
         dirpath=output / "selection",

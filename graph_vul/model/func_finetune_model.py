@@ -6,6 +6,7 @@ from transformers import AutoModel
 
 from graph_vul.config import (
     CODE_MODEL_NAME,
+    CODE_MODEL_REVISION,
     DEBERTA_EMBEDDING_DIM,
     FUNC_MLP_HIDDEN_DIM,
     FUNC_MLP_DROPOUT,
@@ -25,7 +26,9 @@ class FuncFinetuneModel(nn.Module):
         matching_projection_dim=128,
     ):
         super().__init__()
-        self.encoder = AutoModel.from_pretrained(CODE_MODEL_NAME)
+        self.encoder = AutoModel.from_pretrained(
+            CODE_MODEL_NAME, revision=CODE_MODEL_REVISION
+        )
         self.graph_dim = graph_dim
         encoder_dim = self.encoder.config.hidden_size
         if graph_dim:

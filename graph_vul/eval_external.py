@@ -7,7 +7,7 @@ import pandas as pd
 from transformers import AutoTokenizer
 
 from graph_vul.artifacts import file_sha256, preparation_identity, write_json
-from graph_vul.config import CODE_MODEL_NAME
+from graph_vul.config import CODE_MODEL_NAME, CODE_MODEL_REVISION
 from graph_vul.dataset.external_datasets import (
     EXTERNAL_DATASETS,
     EXTERNAL_DATASET_REVISIONS,
@@ -38,7 +38,9 @@ def evaluate(
     internal_hashes = set(
         pd.read_csv(root / "subset.csv")["func_before"].map(code_hash)
     )
-    tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(
+        CODE_MODEL_NAME, revision=CODE_MODEL_REVISION
+    )
     exports = {}
     for name in datasets:
         frame = EXTERNAL_DATASETS[name]()

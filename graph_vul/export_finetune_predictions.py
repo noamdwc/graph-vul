@@ -14,7 +14,7 @@ from graph_vul.artifacts import (
     preparation_identity,
     write_json,
 )
-from graph_vul.config import CODE_MODEL_NAME
+from graph_vul.config import CODE_MODEL_NAME, CODE_MODEL_REVISION
 from graph_vul.dataset.func_finetune_dataset import (
     FuncFinetuneDataset,
     available_splits,
@@ -88,7 +88,9 @@ def export_predictions(checkpoint_path, output_dir, data_root, batch_size=8):
     if prepared != module.hparams.provenance["preparation"]:
         raise ValueError("Evaluation preparation differs from training")
     output.mkdir(parents=True, exist_ok=False)
-    tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(
+        CODE_MODEL_NAME, revision=CODE_MODEL_REVISION
+    )
     subset = pd.read_csv(root / "subset.csv")
     exports = {}
     for split in available_splits(root / "splits"):

@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 
 from graph_vul.model.cwe_matching import load_catalog, CATALOG_PATH
-from graph_vul.config import PROCESSED_DIR, DEBERTA_MODEL_NAME
+from graph_vul.config import PROCESSED_DIR, DEBERTA_MODEL_NAME, DEBERTA_MODEL_REVISION
 from graph_vul.artifacts import code_identity, write_json
 from graph_vul.pipeline.embed_utils import embed_texts, load_deberta
 
@@ -43,7 +43,7 @@ def embed_cwe_texts(
             "code": code_identity(),
             "catalog_version": catalog["version"],
             "model": DEBERTA_MODEL_NAME,
-            "model_revision": getattr(model.config, "_commit_hash", None),
+            "model_revision": DEBERTA_MODEL_REVISION,
             "max_length": 128,
             "batch_size": 16,
             "rows": len(vectors),

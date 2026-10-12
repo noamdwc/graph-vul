@@ -8,7 +8,7 @@ import torch
 from torch_geometric.data import Batch
 from transformers import AutoTokenizer
 
-from graph_vul.config import CODE_MODEL_NAME
+from graph_vul.config import CODE_MODEL_NAME, CODE_MODEL_REVISION
 from graph_vul.export_finetune_predictions import load_model
 from graph_vul.inference import predict_batch
 from graph_vul.pipeline.treesitter_graphs import function_graph
@@ -25,7 +25,9 @@ def main():
     if not code.strip():
         raise ValueError("Provide a nonempty C function")
     module = load_model(args.checkpoint)
-    tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(
+        CODE_MODEL_NAME, revision=CODE_MODEL_REVISION
+    )
     batch = dict(
         tokenizer(
             [code],

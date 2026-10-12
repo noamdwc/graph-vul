@@ -9,7 +9,9 @@ from transformers import AutoModel, AutoTokenizer
 from graph_vul.config import (
     DEBERTA_EMBEDDING_DIM,
     DEBERTA_MODEL_NAME,
+    DEBERTA_MODEL_REVISION,
     UNIXCODER_MODEL_NAME,
+    UNIXCODER_MODEL_REVISION,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,9 +36,13 @@ def load_deberta(
             "and retry. This project's requirements include it."
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, revision=DEBERTA_MODEL_REVISION
+    )
     device = resolve_torch_device()
-    model = AutoModel.from_pretrained(model_name).to(device)
+    model = AutoModel.from_pretrained(model_name, revision=DEBERTA_MODEL_REVISION).to(
+        device
+    )
     model.eval()
     logger.info("Loaded %s on %s", model_name, device)
     return tokenizer, model
@@ -87,9 +93,13 @@ def load_unixcoder(
     model_name: str = UNIXCODER_MODEL_NAME,
 ) -> tuple[AutoTokenizer, AutoModel]:
     """Load the UniXcoder tokenizer and model in eval mode."""
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, revision=UNIXCODER_MODEL_REVISION
+    )
     device = resolve_torch_device()
-    model = AutoModel.from_pretrained(model_name).to(device)
+    model = AutoModel.from_pretrained(model_name, revision=UNIXCODER_MODEL_REVISION).to(
+        device
+    )
     model.eval()
     logger.info("Loaded %s on %s", model_name, device)
     return tokenizer, model
