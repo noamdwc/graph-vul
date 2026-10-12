@@ -257,6 +257,21 @@ def test_cpu_end_to_end_pilot(tiny_backbone, prepared, tmp_path, experiment):
     assert float(load_model(output / "model.ckpt").decision_threshold) == before
     payload = torch.load(output / "model.ckpt", weights_only=True)
     assert payload["calibration"]["rows"] == 2
+    for manifest_path in manifests:
+        manifest = json.loads(manifest_path.read_text())
+        manifest["provenance"]["preparation"]["pilot"] = True
+        write_json(manifest_path, manifest)
+    generate_report(manifests, output / "pilot-report")
+    assert "do not estimate model performance" in (
+        output / "pilot-report/report.md"
+    ).read_text()
+    manifest = json.loads(manifests[0].read_text())
+    manifest["provenance"]["preparation"]["pilot"] = False
+    write_json(manifests[0], manifest)
+    with pytest.raises(ValueError, match="Cannot mix pilot"):
+        generate_report(manifests, output / "mixed-report")
+    manifest["provenance"]["preparation"]["pilot"] = True
+    write_json(manifests[0], manifest)
     predictions = output / "predictions/test_predictions.csv"
     predictions.write_text(predictions.read_text() + "\n")
     with pytest.raises(ValueError, match="changed"):

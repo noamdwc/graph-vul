@@ -50,11 +50,19 @@ def generate_report(manifest_paths, output_dir):
     candidates = None
     checkpoints = {}
     comparison_conditions = None
+    pilot = None
     for manifest_path in map(Path, manifest_paths):
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("contract") != 1:
             raise ValueError("Historical exports cannot enter the canonical report")
-        hashes = manifest["provenance"]["preparation"]["hashes"]
+        preparation = manifest["provenance"]["preparation"]
+        is_pilot = bool(preparation.get("pilot", False))
+        if pilot is not None and is_pilot != pilot:
+            raise ValueError(
+                "Cannot mix pilot diagnostics with full experiment results"
+            )
+        pilot = is_pilot
+        hashes = preparation["hashes"]
         if preparation_hashes is not None and preparation_hashes != hashes:
             raise ValueError("Cannot compare runs with different preparation artifacts")
         preparation_hashes = hashes
@@ -157,7 +165,12 @@ def generate_report(manifest_paths, output_dir):
         "retrieval_top3",
     ]
     lines = [
-        "# Graph-Vul matching results",
+        "# Graph-Vul integration pilot: execution diagnostics"
+        if pilot
+        else "# Graph-Vul matching results",
+        "Pilot metrics verify a bounded workflow run; they do not estimate model performance."
+        if pilot
+        else "",
         "",
         "Generated only from versioned, hash-verified prediction artifacts. Unseen splits are overlapping diagnostic slices; row counts are not summed across them.",
         "",
