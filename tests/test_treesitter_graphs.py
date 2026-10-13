@@ -49,9 +49,9 @@ class TestParseFunctionAst:
             assert 0 <= src < num_nodes
             assert 0 <= dst < num_nodes
 
-    def test_root_node_is_function_definition(self):
+    def test_root_node_is_translation_unit(self):
         node_types, _ = parse_function_ast(SIMPLE_C_FUNC)
-        assert node_types[0] == "function_definition"
+        assert node_types[0] == "translation_unit"
 
     def test_if_statement_present_in_branching_func(self):
         node_types, _ = parse_function_ast(IF_C_FUNC)
@@ -137,40 +137,16 @@ class TestExtractTreesitterGraphs:
             edge_vocab = json.load(f)
         assert edge_vocab == {"AST": 0}
 
-    def test_skips_existing_pt_files(self, tmp_path):
-        csv_path = tmp_path / "subset.csv"
-        output_dir = tmp_path / "graph_artifacts"
-        output_dir.mkdir(parents=True)
-        pd.DataFrame({
-            "sample_id": ["s1"],
-            "func_before": [SIMPLE_C_FUNC],
-        }).to_csv(csv_path, index=False)
+    def test_rejects_existing_artifact_directory(self, tmp_path):
+        csv_path = tmp_path / 'subset.csv'
+        output_dir = tmp_path / 'graphs'
+        output_dir.mkdir()
+        pd.DataFrame({'sample_id': ['s1'], 'func_before': [SIMPLE_C_FUNC]}).to_csv(csv_path, index=False)
+        with pytest.raises(FileExistsError):
+            extract_treesitter_graphs(str(csv_path), str(output_dir))
 
-        # Pre-create a dummy .pt file
-        dummy = {"node_type_ids": torch.tensor([99]), "edge_index": torch.zeros(2, 0, dtype=torch.long), "edge_type_ids": torch.zeros(0, dtype=torch.long)}
-        torch.save(dummy, output_dir / "s1.pt")
-
-        extract_treesitter_graphs(
-            input_csv=str(csv_path),
-            output_dir=str(output_dir),
-        )
-
-        # Should NOT have overwritten — node_type_ids should still be [99]
-        data = torch.load(output_dir / "s1.pt", weights_only=True)
-        assert data["node_type_ids"].tolist() == [99]
-
-    def test_skips_empty_func_before(self, tmp_path):
-        csv_path = tmp_path / "subset.csv"
-        output_dir = tmp_path / "graph_artifacts"
-        pd.DataFrame({
-            "sample_id": ["s1", "s2"],
-            "func_before": ["", SIMPLE_C_FUNC],
-        }).to_csv(csv_path, index=False)
-
-        extract_treesitter_graphs(
-            input_csv=str(csv_path),
-            output_dir=str(output_dir),
-        )
-
-        assert not (output_dir / "s1.pt").exists()
-        assert (output_dir / "s2.pt").exists()
+    def test_rejects_empty_function(self, tmp_path):
+        csv_path = tmp_path / 'subset.csv'
+        pd.DataFrame({'sample_id': ['s1'], 'func_before': ['']}).to_csv(csv_path, index=False)
+        with pytest.raises(ValueError, match='Empty training'):
+            extract_treesitter_graphs(str(csv_path), str(tmp_path / 'graphs'))

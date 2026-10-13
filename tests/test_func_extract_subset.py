@@ -75,7 +75,7 @@ class TestExtractFuncSubset:
                     "cve_desc": "second duplicate",
                     "project": "ProjectA",
                     "func_before": "duplicate();",
-                    "vul": 0,
+                    "vul": 1,
                 },
                 {
                     "cwe_id": "CWE-125",

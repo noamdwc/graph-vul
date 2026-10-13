@@ -50,6 +50,8 @@ from graph_vul.config import (
     VAL_SPLIT,
 )
 
+from graph_vul.model.cwe_matching import parse_cwe_ids
+
 logger = logging.getLogger(__name__)
 
 ALL_SPLITS = ["train", "val", "test", "unseen_val", "unseen_test"]
@@ -134,22 +136,25 @@ def _dejoin_official_splits(
     # so their CWEs remain "unseen" for zero-shot evaluation.
     train_excluded_projects: set[str] = set()
     if "cwe_id" in df.columns:
-        official_train_cwes = set(
-            df.loc[df["_norm_split"] == "train", "cwe_id"].dropna().unique()
-        )
+        official_train_cwes = {
+            cwe for value in df.loc[df["_norm_split"] == "train", "cwe_id"]
+            for cwe in parse_cwe_ids(value)
+        }
         anchored_eval_ids = set(
             anchored_assignments.loc[
                 anchored_assignments["split"].isin(["val", "test"]), "sample_id"
             ]
         )
-        anchored_eval_cwes = set(
-            df.loc[df["sample_id"].isin(anchored_eval_ids), "cwe_id"].dropna().unique()
-        )
+        anchored_eval_cwes = {
+            cwe for value in df.loc[df["sample_id"].isin(anchored_eval_ids), "cwe_id"]
+            for cwe in parse_cwe_ids(value)
+        }
 
         for eval_split in ["val", "test"]:
-            eval_cwes = set(
-                df.loc[df["_norm_split"] == eval_split, "cwe_id"].dropna().unique()
-            )
+            eval_cwes = {
+                cwe for value in df.loc[df["_norm_split"] == eval_split, "cwe_id"]
+                for cwe in parse_cwe_ids(value)
+            }
             unseen_cwes = eval_cwes - official_train_cwes
             if not unseen_cwes:
                 continue
@@ -161,7 +166,7 @@ def _dejoin_official_splits(
                 # Find the smallest multi-split carrier — exclude it from train
                 cwe_projects = set(
                     df.loc[
-                        (df["cwe_id"] == cwe) & df["project"].isin(multi_split_projects),
+                        df["cwe_id"].map(lambda value: cwe in parse_cwe_ids(value)) & df["project"].isin(multi_split_projects),
                         "project",
                     ].unique()
                 )
@@ -229,16 +234,13 @@ def _derive_unseen_official_assignments(
     """Build derived unseen subsets from official val/test rows with CWEs absent from train."""
     merged = df.merge(primary_assignments, on="sample_id", how="inner")
     merged["cwe_id"] = merged["cwe_id"].fillna("").astype(str).str.strip()
-    train_cwes = {
-        cwe for cwe in merged.loc[merged["split"] == "train", "cwe_id"].unique()
-        if cwe and cwe.lower() != "nan"
-    }
+    train_cwes = {cwe for value in merged.loc[merged['split'] == 'train', 'cwe_id'] for cwe in parse_cwe_ids(value)}
 
     rows = []
     for source_split, unseen_split in (("val", "unseen_val"), ("test", "unseen_test")):
         split_df = merged[merged["split"] == source_split].copy()
         split_df = split_df[split_df["cwe_id"].astype(bool)]
-        split_df = split_df[~split_df["cwe_id"].isin(train_cwes)]
+        split_df = split_df[split_df["cwe_id"].apply(lambda value: not bool(set(parse_cwe_ids(value)) & train_cwes))]
         if len(split_df) == 0:
             continue
         rows.append(split_df[["sample_id"]].assign(split=unseen_split))
@@ -270,7 +272,7 @@ def _validate_heldout_eligibility(
 
     errors = []
     for cwe in heldout_cwe_ids:
-        cwe_rows = df[df["cwe_id"] == cwe]
+        cwe_rows = df[df["cwe_id"].apply(lambda value: cwe in parse_cwe_ids(value))]
         total = len(cwe_rows)
         vul = int((cwe_rows["vul"] == 1).sum())
         n_projects = cwe_rows["project"].nunique()
@@ -311,7 +313,7 @@ def _build_unseen_pool(
         return df.copy(), pd.DataFrame(columns=df.columns), {}
 
     # Find projects that touch any held-out CWE
-    heldout_rows = df[df["cwe_id"].isin(heldout_cwe_ids)]
+    heldout_rows = df[df["cwe_id"].apply(lambda value: bool(set(parse_cwe_ids(value)) & set(heldout_cwe_ids)))]
     migration_info: dict[str, list[str]] = {}
     for project, group in heldout_rows.groupby("project"):
         migration_info[project] = sorted(group["cwe_id"].unique().tolist())
@@ -797,7 +799,7 @@ def _validate_splits(
     if heldout_cwe_ids and "cwe_id" in merged.columns:
         for split_name in ["train", "val", "test"]:
             split_df = merged[merged["split"] == split_name]
-            leaked_cwes = set(split_df["cwe_id"].unique()) & set(heldout_cwe_ids)
+            leaked_cwes = {cwe for value in split_df["cwe_id"] for cwe in parse_cwe_ids(value)} & set(heldout_cwe_ids)
             if leaked_cwes:
                 warnings.append(
                     f"HELD-OUT CWE LEAKAGE: {leaked_cwes} found in '{split_name}' split"
@@ -1385,6 +1387,8 @@ def split_data(
     split_mode: str = "project_disjoint",
 ) -> None:
     df = pd.read_csv(input_csv)
+    if "cwe_id" in df.columns:
+        df["cwe_id"] = df["cwe_id"].fillna("")
     official_split_mode = "source_split" in df.columns and df["source_split"].notna().any()
     derived_unseen_assignments = pd.DataFrame(columns=["sample_id", "split"])
 
@@ -1415,7 +1419,7 @@ def split_data(
     has_cwe = "cwe_id" in df.columns
     # Only attempt held-out CWE splitting if the data actually contains them
     present_heldout = (
-        [c for c in HELDOUT_CWE_IDS if c in set(df["cwe_id"].dropna().unique())]
+        [c for c in HELDOUT_CWE_IDS if c in {cwe for value in df["cwe_id"] for cwe in parse_cwe_ids(value)}]
         if has_cwe and HELDOUT_CWE_IDS else []
     )
     use_heldout = bool(present_heldout)
