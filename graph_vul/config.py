@@ -110,7 +110,6 @@ CODE_EMBEDDING_DIM = UNIXCODER_EMBEDDING_DIM
 FUNC_SUBSET_CSV = DATA_DIR / "func_subset.csv"
 FUNC_SUBSET_MANIFEST = DATA_DIR / "func_subset_manifest.json"
 FUNC_SUBSET_REPORT = DATA_DIR / "func_subset_report.md"
-FUNC_EMBEDDINGS_DIR = PROCESSED_DIR / "func_embeddings"
 FUNC_SPLITS_DIR = DATA_DIR / "func_splits"
 
 # Function subset extraction
