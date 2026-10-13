@@ -1,214 +1,50 @@
 stages:
-  data_ingestion:
-    cmd: python scripts/download_bigvul.py
+  prepare_matching:
+    cmd: python -m graph_vul.pipeline.prepare_matching --output-dir data/interview-v1 --dataset-revision 4fd7158322872d711e90f091dbd8673ef32cb1be
     deps:
-    - scripts/download_bigvul.py
-    outs:
-    - data/bigvul.csv
-
-  # extract_subset:
-  #   cmd: python -m graph_vul.pipeline.extract_subset --input data/bigvul.csv 
-  #     --output data/subset.csv --manifest data/subset_manifest.json --report 
-  #     data/subset_report.md
-  #   deps:
-  #   - data/bigvul.csv
-  #   - graph_vul/pipeline/extract_subset.py
-  #   - graph_vul/config.py
-  #   outs:
-  #   - data/subset.csv
-  #   - data/subset_manifest.json
-  #   - data/subset_report.md
-
-  # joern_export:
-  #   cmd: python -m graph_vul.pipeline.joern_export --input data/subset.csv --output data/raw
-  #   deps:
-  #     - data/subset.csv
-  #     - graph_vul/pipeline/joern_export.py
-  #   outs:
-  #     - data/raw
-
-  # embed_code:
-  #   cmd: python -m graph_vul.pipeline.embed_code --input data/raw --output data/processed/code_embeddings --subset-csv data/subset.csv
-  #   deps:
-  #     - data/raw
-  #     - data/subset.csv
-  #     - graph_vul/pipeline/embed_code.py
-  #     - graph_vul/pipeline/embed_utils.py
-  #   outs:
-  #     - data/processed/code_embeddings
-
-  # func_joern_export:
-  #   cmd: python -m graph_vul.pipeline.joern_export --input data/func_subset.csv --output data/raw
-  #   deps:
-  #   - data/func_subset.csv
-  #   - graph_vul/pipeline/joern_export.py
-  #   - graph_vul/config.py
-  #   outs:
-  #   - data/raw
-
-  # func_extract_graphs:
-  #   cmd: python -m graph_vul.pipeline.extract_graphs --input data/raw --output data/processed/graph_artifacts --subset-csv data/func_subset.csv
-  #   deps:
-  #     - data/raw
-  #     - data/func_subset.csv
-  #     - graph_vul/pipeline/extract_graphs.py
-  #     - graph_vul/config.py
-  #   outs:
-  #     - data/processed/graph_artifacts
-
-  func_treesitter_graphs:
-    cmd: python -m graph_vul.pipeline.treesitter_graphs --input data/func_subset.csv --output data/processed/graph_artifacts
-    deps:
-      - data/func_subset.csv
+      - graph_vul/pipeline/prepare_matching.py
+      - graph_vul/pipeline/func_extract_subset.py
+      - graph_vul/pipeline/split_data.py
       - graph_vul/pipeline/treesitter_graphs.py
+      - graph_vul/dataset/primevul_adapter.py
+      - graph_vul/model/cwe_matching.py
       - graph_vul/config.py
+      - configs/cwe_catalog_v1.json
     outs:
-      - data/processed/graph_artifacts
-
+      - data/interview-v1/normalized.csv
+      - data/interview-v1/unknown_cwe_vulnerable.csv
+      - data/interview-v1/subset.csv
+      - data/interview-v1/subset_manifest.json
+      - data/interview-v1/subset_report.md
+      - data/interview-v1/preparation.json
+      - data/interview-v1/splits
+      - data/interview-v1/graphs
   embed_cwe:
-    cmd: python -m graph_vul.pipeline.embed_cwe --input 
-      data/cwe_descriptions.json --output data/processed/cwe_embeddings
+    cmd: python -m graph_vul.pipeline.embed_cwe --input configs/cwe_catalog_v1.json --output data/interview-v1/cwe_embeddings
     deps:
-    - data/cwe_descriptions.json
-    - graph_vul/pipeline/embed_cwe.py
-    - graph_vul/pipeline/embed_utils.py
+      - data/interview-v1/preparation.json
+      - configs/cwe_catalog_v1.json
+      - graph_vul/pipeline/embed_cwe.py
+      - graph_vul/pipeline/embed_utils.py
     outs:
-    - data/processed/cwe_embeddings
-
-  # split_data:
-  #   cmd: python -m graph_vul.pipeline.split_data --input data/subset.csv 
-  #     --output data/splits --seed 42
-  #   deps:
-  #   - data/subset.csv
-  #   - graph_vul/pipeline/split_data.py
-  #   outs:
-  #   - data/splits
-
-  # train:
-  #   cmd: python -m graph_vul.train --epochs 35 --batch-size 32 --lr 1e-5 --seed 42
-  #   deps:
-  #     - data/processed/code_embeddings
-  #     - data/processed/cwe_embeddings
-  #     - data/splits
-  #     - graph_vul/train.py
-  #     - graph_vul/dataset/cpg_dataset.py
-  #     - graph_vul/model/
-  #   outs:
-  #     - data/best_model.ckpt
-  #   metrics:
-  #     - data/metrics.json:
-  #         cache: false
-
-  func_extract_subset:
-    cmd: python -m graph_vul.pipeline.func_extract_subset
+      - data/interview-v1/cwe_embeddings
+  matching_matrix:
+    cmd: python -m scripts.run_matching_matrix --data-root data/interview-v1 --output-dir data/matrix-v1
     deps:
-    - graph_vul/pipeline/func_extract_subset.py
-    - graph_vul/dataset/primevul_adapter.py
-    - graph_vul/config.py
+      - data/interview-v1/preparation.json
+      - data/interview-v1/subset.csv
+      - data/interview-v1/splits
+      - data/interview-v1/graphs
+      - data/interview-v1/cwe_embeddings
+      - graph_vul/model
+      - graph_vul/train_finetune.py
+      - graph_vul/inference.py
+      - graph_vul/artifacts.py
+      - graph_vul/export_finetune_predictions.py
+      - graph_vul/eval_external.py
+      - graph_vul/dataset/external_datasets.py
+      - graph_vul/dataset/func_finetune_dataset.py
+      - graph_vul/analysis/cwe_matching_report.py
+      - scripts/run_matching_matrix.py
     outs:
-    - data/func_subset.csv
-    - data/func_subset_manifest.json
-    - data/func_subset_report.md
-
-  # func_embed:
-  #   cmd: python -m graph_vul.pipeline.embed_functions
-  #   deps:
-  #   - data/func_subset.csv
-  #   - graph_vul/pipeline/embed_functions.py
-  #   - graph_vul/pipeline/embed_utils.py
-  #   outs:
-  #   - data/processed/func_embeddings
-
-  func_split:
-    cmd: python -m graph_vul.pipeline.split_data --input data/func_subset.csv
-      --output data/func_splits --split-mode project_disjoint
-    deps:
-    - data/func_subset.csv
-    - graph_vul/pipeline/split_data.py
-    outs:
-    - data/func_splits
-
-  partition_by_length:
-    cmd: python -m graph_vul.pipeline.partition_by_length --input data/func_subset.csv
-      --output-dir data/partitions
-    deps:
-    - data/func_subset.csv
-    - graph_vul/pipeline/partition_by_length.py
-    - graph_vul/config.py
-    outs:
-    - data/partitions/short/func_subset.csv
-    - data/partitions/other/func_subset.csv
-
-  func_split_short:
-    cmd: python -m graph_vul.pipeline.split_data --input data/partitions/short/func_subset.csv
-      --output data/partitions/short/splits --split-mode project_disjoint
-    deps:
-    - data/partitions/short/func_subset.csv
-    - graph_vul/pipeline/split_data.py
-    - graph_vul/config.py
-    outs:
-    - data/partitions/short/splits
-
-  func_split_other:
-    cmd: python -m graph_vul.pipeline.split_data --input data/partitions/other/func_subset.csv
-      --output data/partitions/other/splits --split-mode project_disjoint
-    deps:
-    - data/partitions/other/func_subset.csv
-    - graph_vul/pipeline/split_data.py
-    - graph_vul/config.py
-    outs:
-    - data/partitions/other/splits
-    
-  func_finetune:
-    cmd: python -m graph_vul.train_finetune --ablation-mode E0
-    deps:
-    - data/func_subset.csv
-    - data/processed/cwe_embeddings
-    - data/func_splits
-    - graph_vul/train_finetune.py
-    - graph_vul/dataset/func_finetune_dataset.py
-    - graph_vul/model/func_finetune_model.py
-    - graph_vul/model/func_finetune_lit_module.py
-    - graph_vul/model/cwe_matching.py
-    outs:
-    - data/func_finetune_model.ckpt
-    metrics:
-    - data/func_finetune_metrics.json:
-        cache: false
-
-  func_export_predictions:
-    cmd: python -m graph_vul.export_finetune_predictions --checkpoint data/func_finetune_model.ckpt --output-dir data/analysis/func_finetune_predictions
-    deps:
-    - data/func_subset.csv
-    - data/processed/cwe_embeddings
-    - data/func_splits
-    - data/func_finetune_model.ckpt
-    - graph_vul/export_finetune_predictions.py
-    - graph_vul/analysis/cwe_matching_report.py
-    - graph_vul/dataset/func_finetune_dataset.py
-    - graph_vul/model/func_finetune_model.py
-    - graph_vul/model/func_finetune_lit_module.py
-    - graph_vul/model/cwe_matching.py
-    outs:
-    - data/analysis/func_finetune_predictions
-
-  eval_external_tier1:
-    cmd: python -m graph_vul.eval_external
-    deps:
-    - data/func_finetune_model.ckpt
-    - data/processed/cwe_embeddings
-    - graph_vul/eval_external.py
-    - graph_vul/analysis/cwe_matching_report.py
-    - graph_vul/dataset/external_datasets.py
-    - graph_vul/model/cwe_matching.py
-    outs:
-    - data/analysis/external_eval_tier1
-
-  post_experiment_analysis:
-    cmd: jupyter nbconvert --to pdf --execute --output-dir outputs
-      notebooks/post_experiment_analysis.ipynb
-    deps:
-    - data/analysis/func_finetune_predictions
-    - notebooks/post_experiment_analysis.ipynb
-    outs:
-    - outputs/post_experiment_analysis.pdf
+      - data/matrix-v1
