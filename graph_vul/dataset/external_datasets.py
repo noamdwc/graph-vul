@@ -14,6 +14,7 @@ from transformers import AutoTokenizer
 
 from graph_vul.config import (
     CODE_MODEL_NAME,
+    CODE_MODEL_REVISION,
     FUNC_MAX_WHITESPACE_TOKENS,
 )
 
@@ -114,7 +115,9 @@ class ExternalEvalDataset(Dataset):
         if tokenizer is not None:
             self.tokenizer = tokenizer
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                CODE_MODEL_NAME, revision=CODE_MODEL_REVISION
+            )
 
         self.sample_ids = df["sample_id"].values
         self.cwe_ids = df["cwe_id"].values

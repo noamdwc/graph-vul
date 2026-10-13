@@ -17,6 +17,7 @@ from transformers import AutoTokenizer
 
 from graph_vul.config import (
     CODE_MODEL_NAME,
+    CODE_MODEL_REVISION,
     FUNC_SPLITS_DIR,
     FUNC_SUBSET_CSV,
     GRAPH_ARTIFACTS_DIR,
@@ -73,7 +74,9 @@ class FuncFinetuneDataset(Dataset):
         if tokenizer is not None:
             self.tokenizer = tokenizer
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                CODE_MODEL_NAME, revision=CODE_MODEL_REVISION
+            )
 
         # Load subset metadata
         subset = pd.read_csv(subset_csv, usecols=["sample_id", "func_before", "cwe_id", "vul"])
