@@ -85,4 +85,6 @@ Returns CWE or NONE, the decision margin and saved threshold, NONE logit and top
 
 ## Historical evidence
 
+The cached-function-embedding baseline trainer, dataset and classifier have been retired. All four supported experiments use `FuncFinetuneDataset`, including the `pair` baseline. To keep UniXcoder frozen, pass `--freeze-encoder-fully` to `graph_vul.train_finetune`; inputs still follow the same token-based, all-candidate matching contract.
+
 Existing `outputs/`, exploratory reports, old data checkpoints and fusion notebooks remain for provenance. They use different targets, candidate inputs, pooling, graph paths or calibration and do not establish results for the current contract. Superseded notebooks are labeled at their entry points. The supported training notebook is `colab_finetune.ipynb`; the supported report is generated from prediction manifests by `cwe_matching_report`.

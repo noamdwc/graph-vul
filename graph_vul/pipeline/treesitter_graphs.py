@@ -2,7 +2,7 @@
 
 Replaces the Joern-based pipeline (joern_export.py + extract_graphs.py)
 with a fast, in-process alternative. Produces per-sample .pt files
-compatible with func_dataset.py / func_finetune_dataset.py.
+consumed by func_finetune_dataset.py.
 """
 
 import argparse

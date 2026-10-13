@@ -1,3 +1,5 @@
+> Retired historical specification. The cached-embedding dataset, MLP and trainer have been removed. Current experiments use the [matching contract](../../../docs/MATCHING_CONTRACT.md).
+
 ## ADDED Requirements
 
 ### Requirement: MLP classifier architecture
