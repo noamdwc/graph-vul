@@ -1,12 +1,46 @@
 from __future__ import annotations
 
 import random
+import json
+import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import pandas as pd
 import torch
 import torch.nn.functional as F
+
+
+CATALOG_PATH = Path(__file__).resolve().parents[2] / "configs/cwe_catalog_v1.json"
+NONE = "NONE"
+
+
+def parse_cwe_ids(value: object) -> list[str]:
+    """Normalize all real annotations; missing/unknown labels remain empty."""
+    if value is None:
+        return []
+    values = (
+        value if isinstance(value, Iterable) and not isinstance(value, str) else [value]
+    )
+    result = set()
+    for item in values:
+        text = str(item).strip().upper()
+        if text.isdigit():
+            text = "CWE-" + text
+        result.update(re.findall(r"CWE-\d+", text))
+    return sorted(result)
+
+
+def load_catalog(path: str | Path = CATALOG_PATH) -> dict:
+    catalog = json.loads(Path(path).read_text())
+    descriptions = catalog["descriptions"]
+    if not catalog["version"] or not descriptions:
+        raise ValueError("Catalog needs a version and real CWE descriptions")
+    for cwe, description in descriptions.items():
+        if parse_cwe_ids(cwe) != [cwe] or not description.strip():
+            raise ValueError(f"Invalid catalog entry: {cwe}")
+    return catalog
 
 
 @dataclass(frozen=True)
