@@ -25,6 +25,7 @@ DEDUPLICATE_CODE = True
 
 # DeBERTa
 DEBERTA_MODEL_NAME = "microsoft/deberta-v3-base"
+DEBERTA_MODEL_REVISION = "8ccc9b6f36199bec6961081d44eb72fb3f7353f3"
 DEBERTA_EMBEDDING_DIM = 768
 
 # GAT
@@ -96,16 +97,14 @@ MIN_LR = 1e-8
 
 # UniXcoder
 UNIXCODER_MODEL_NAME = "microsoft/unixcoder-base"
+UNIXCODER_MODEL_REVISION = "5604afdc964f6c53782a6813140ade5216b99006"
 UNIXCODER_EMBEDDING_DIM = 768
 FUNC_MAX_WHITESPACE_TOKENS = 512  # filter functions >= 513
 
-# Backbone for fine-tuning: was UniXcoder-base (768d, 12L, bidirectional),
-# now Qwen3-0.6B (1024d, 28L, decoder-only causal).
-# UNIXCODER_* constants above are retained for the frozen-embedding baseline
-# path (embed_functions.py, func_classifier.py); they are not used by the
-# fine-tune model.
-CODE_MODEL_NAME = "Qwen/Qwen3-0.6B"
-CODE_EMBEDDING_DIM = 1024
+# One supported code backbone for training and inference.
+CODE_MODEL_NAME = UNIXCODER_MODEL_NAME
+CODE_MODEL_REVISION = UNIXCODER_MODEL_REVISION
+CODE_EMBEDDING_DIM = UNIXCODER_EMBEDDING_DIM
 
 # Function baseline paths
 FUNC_SUBSET_CSV = DATA_DIR / "func_subset.csv"
@@ -135,7 +134,7 @@ FINETUNE_GRAD_ACCUM_STEPS = 8  # effective batch size = 64
 FINETUNE_NUM_EPOCHS = 10
 FINETUNE_CHECKPOINT_PATH = DATA_DIR / "func_finetune_model.ckpt"
 
-# Graph baseline (RGCN on AST+CFG)
+# Graph baseline (RGCN on tree-sitter AST)
 GRAPH_ARTIFACTS_DIR = PROCESSED_DIR / "graph_artifacts"
 GRAPH_NODE_VOCAB_PATH = GRAPH_ARTIFACTS_DIR / "node_type_vocab.json"
 GRAPH_EDGE_VOCAB_PATH = GRAPH_ARTIFACTS_DIR / "edge_type_vocab.json"
@@ -145,7 +144,7 @@ GRAPH_NUM_RGCN_LAYERS = 2
 GRAPH_DROPOUT = 0.3
 
 # CWE matching supervision ablation
-MATCHING_ABLATION_MODE = "E2"
+MATCHING_ABLATION_MODE = "pair"
 MATCHING_PROJECTION_DIM = 128
 MATCHING_NEGATIVES_PER_POSITIVE = 1
 MATCHING_LOSS_LAMBDA = 0.1
