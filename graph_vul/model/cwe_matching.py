@@ -7,8 +7,6 @@ import random
 import re
 
 import torch
-import pandas as pd
-import torch.nn.functional as F
 
 CATALOG_PATH = Path(__file__).resolve().parents[2] / "configs/cwe_catalog_v1.json"
 NONE = "NONE"
@@ -141,18 +139,3 @@ class CWEEmbeddingStore:
 
     def stack(self, cwe_ids, device):
         return torch.stack([self.get(cwe) for cwe in cwe_ids]).to(device)
-
-
-def candidate_cwe_ids_from_subset(subset_csv: str | Path) -> list[str]:
-    subset_path = Path(subset_csv)
-    if not subset_path.exists():
-        return []
-    df = pd.read_csv(subset_path, usecols=["cwe_id"])
-    return sorted({
-        str(cwe_id).strip()
-        for cwe_id in df["cwe_id"].dropna().astype(str).tolist()
-        if str(cwe_id).strip()
-    })
-
-def cosine_similarity_logits(anchor: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
-    return F.cosine_similarity(anchor, other, dim=-1)
