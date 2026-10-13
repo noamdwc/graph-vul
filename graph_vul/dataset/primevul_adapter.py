@@ -10,6 +10,8 @@ from datasets import DatasetDict, load_dataset
 
 from graph_vul.config import PRIMEVUL_DATASET_CONFIG, PRIMEVUL_DATASET_NAME
 
+from graph_vul.model.cwe_matching import parse_cwe_ids
+
 logger = logging.getLogger(__name__)
 
 OFFICIAL_SPLIT_MAP = {
@@ -20,28 +22,8 @@ OFFICIAL_SPLIT_MAP = {
 }
 
 
-def _normalise_cwe(cwe_values: object) -> str:
-    if cwe_values is None:
-        return ""
-    if isinstance(cwe_values, str):
-        values: Iterable[object] = [cwe_values]
-    elif isinstance(cwe_values, Iterable):
-        values = cwe_values
-    else:
-        values = [cwe_values]
-
-    values = list(values)
-    if not values:
-        return ""
-
-    first = str(values[0]).strip()
-    if not first:
-        return ""
-    if first.startswith("CWE-"):
-        return first
-    if first.isdigit():
-        return f"CWE-{first}"
-    return first
+def _normalise_cwe(values) -> str:
+    return ";".join(parse_cwe_ids(values))
 
 
 def _normalize_split_name(split_name: str) -> str:
@@ -54,10 +36,11 @@ def _normalize_split_name(split_name: str) -> str:
 def load_primevul_training_data(
     dataset_name: str = PRIMEVUL_DATASET_NAME,
     dataset_config: str = PRIMEVUL_DATASET_CONFIG,
+    revision: str | None = None,
 ) -> pd.DataFrame:
     """Load PrimeVul official splits and normalize to the function training schema."""
     logger.info("Loading PrimeVul training data from Hugging Face: %s (%s)", dataset_name, dataset_config)
-    dataset = load_dataset(dataset_name, dataset_config)
+    dataset = load_dataset(dataset_name, dataset_config, revision=revision)
     if not isinstance(dataset, DatasetDict):
         raise TypeError(f"Expected DatasetDict from load_dataset, got {type(dataset)!r}")
 

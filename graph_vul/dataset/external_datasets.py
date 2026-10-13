@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 import pandas as pd
 import torch
@@ -15,30 +14,27 @@ from transformers import AutoTokenizer
 
 from graph_vul.config import (
     CODE_MODEL_NAME,
-    DEBERTA_EMBEDDING_DIM,
+    CODE_MODEL_REVISION,
     FUNC_MAX_WHITESPACE_TOKENS,
-    PROCESSED_DIR,
 )
+
+from graph_vul.model.cwe_matching import parse_cwe_ids
 
 logger = logging.getLogger(__name__)
 
+
+EXTERNAL_DATASET_REVISIONS = {
+    'primevul': '4fd7158322872d711e90f091dbd8673ef32cb1be',
+    'diversevul': '3ed5dae8fdf3f6026f1e260f789656c4bb6d98e6',
+}
 
 # ---------------------------------------------------------------------------
 # Adapters — each returns a DataFrame with [sample_id, func_before, vul, cwe_id]
 # ---------------------------------------------------------------------------
 
 
-def _normalise_cwe(cwe_list) -> str:
-    """Take the first CWE from a list/array, return 'CWE-XXX' or empty string."""
-    if cwe_list is None or len(cwe_list) == 0:
-        return ""
-    cwe = str(cwe_list[0])
-    if cwe.startswith("CWE-"):
-        return cwe
-    # Numeric-only → prefix
-    if cwe.isdigit():
-        return f"CWE-{cwe}"
-    return cwe
+def _normalise_cwe(values) -> str:
+    return ";".join(parse_cwe_ids(values))
 
 
 def _token_count(text: str) -> int:
@@ -48,7 +44,7 @@ def _token_count(text: str) -> int:
 def load_primevul() -> pd.DataFrame:
     """Load PrimeVul test split from HuggingFace and normalise."""
     logger.info("Loading PrimeVul from HuggingFace (test split)...")
-    ds = load_dataset("colin/PrimeVul", "default", split="test")
+    ds = load_dataset("colin/PrimeVul", "default", split="test", revision=EXTERNAL_DATASET_REVISIONS["primevul"])
     df = ds.to_pandas()
 
     df = df.rename(columns={"func": "func_before", "target": "vul"})
@@ -70,7 +66,7 @@ def load_primevul() -> pd.DataFrame:
 def load_diversevul() -> pd.DataFrame:
     """Load DiverseVul test split from HuggingFace and normalise."""
     logger.info("Loading DiverseVul from HuggingFace (test split)...")
-    ds = load_dataset("bstee615/diversevul", split="test")
+    ds = load_dataset("bstee615/diversevul", split="test", revision=EXTERNAL_DATASET_REVISIONS["diversevul"])
     df = ds.to_pandas()
 
     df = df.rename(columns={"func": "func_before", "target": "vul"})
@@ -107,29 +103,27 @@ class ExternalEvalDataset(Dataset):
         df: pd.DataFrame,
         tokenizer: AutoTokenizer | None = None,
         max_length: int = 512,
-        cwe_embeddings_dir: str | Path | None = None,
-        embedding_dim: int = DEBERTA_EMBEDDING_DIM,
+        node_vocab: dict | None = None,
+        edge_vocab: dict | None = None,
     ) -> None:
         self.max_length = max_length
-        self.cwe_dir = Path(cwe_embeddings_dir) if cwe_embeddings_dir else PROCESSED_DIR / "cwe_embeddings"
-        self.embedding_dim = embedding_dim
+        self.graphs = None
+        if node_vocab is not None:
+            from graph_vul.pipeline.treesitter_graphs import function_graph
+            self.graphs = [function_graph(code, node_vocab, edge_vocab) for code in df["func_before"]]
 
         if tokenizer is not None:
             self.tokenizer = tokenizer
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(CODE_MODEL_NAME)
-
-        # Qwen3 has no pad token by default; EOS stands in for right padding.
-        if getattr(self.tokenizer, "pad_token", None) is None and getattr(
-            self.tokenizer, "eos_token", None
-        ) is not None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                CODE_MODEL_NAME, revision=CODE_MODEL_REVISION
+            )
 
         self.sample_ids = df["sample_id"].values
         self.cwe_ids = df["cwe_id"].values
+        if not df["sample_id"].is_unique or not df["vul"].isin([0, 1]).all():
+            raise ValueError("Expected unique external sample IDs and binary labels")
         self.labels = df["vul"].values.astype(float)
-
-        self._cwe_cache: dict[str, torch.Tensor] = {}
 
         codes = df["func_before"].fillna("").tolist()
         logger.info("Pre-tokenizing %d external samples (max_length=%d)...", len(codes), self.max_length)
@@ -146,25 +140,19 @@ class ExternalEvalDataset(Dataset):
         elapsed = time.perf_counter() - t0
         logger.info("Pre-tokenization complete in %.1fs — cached %d input_ids", elapsed, len(self.input_ids))
 
-    def _get_cwe_embedding(self, cwe_id: str) -> torch.Tensor:
-        if cwe_id not in self._cwe_cache:
-            cwe_path = self.cwe_dir / f"{cwe_id}.pt"
-            if cwe_path.exists():
-                self._cwe_cache[cwe_id] = torch.load(cwe_path, weights_only=True).float()
-            else:
-                self._cwe_cache[cwe_id] = torch.zeros(self.embedding_dim, dtype=torch.float32)
-        return self._cwe_cache[cwe_id]
-
     def __len__(self) -> int:
         return len(self.labels)
 
     def __getitem__(self, idx: int) -> dict:
-        return {
+        item = {
             "input_ids": self.input_ids[idx],
             "attention_mask": self.attention_masks[idx],
             "token_count": self.attention_masks[idx].sum(),
             "sample_id": self.sample_ids[idx],
-            "cwe_id": str(self.cwe_ids[idx]),
-            "cwe_embedding": self._get_cwe_embedding(str(self.cwe_ids[idx])),
+            "cwe_ids": parse_cwe_ids(self.cwe_ids[idx]),
             "label": torch.tensor(self.labels[idx], dtype=torch.float32),
         }
+
+        if self.graphs is not None:
+            item["graph_data"] = self.graphs[idx]
+        return item

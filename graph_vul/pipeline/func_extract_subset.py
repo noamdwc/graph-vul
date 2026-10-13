@@ -18,6 +18,7 @@ from graph_vul.config import (
     TRAINING_DATASET_NAME,
 )
 from graph_vul.dataset.primevul_adapter import load_primevul_training_data
+from graph_vul.model.cwe_matching import parse_cwe_ids
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ def _derive_metadata(df: pd.DataFrame) -> pd.DataFrame:
 def _count_unique_cwes(df: pd.DataFrame) -> int:
     if "cwe_id" not in df.columns:
         return 0
-    return int(df["cwe_id"].dropna().nunique())
+    return len({cwe for value in df["cwe_id"] for cwe in parse_cwe_ids(value)})
 
 
 def _make_stage_summary(
@@ -81,6 +82,12 @@ def _deduplicate(df: pd.DataFrame) -> pd.DataFrame:
     df["_code_hash"] = df["func_before"].fillna("").apply(
         lambda x: hashlib.sha256(x.encode("utf-8", errors="replace")).hexdigest()
     )
+    duplicate_rows = df[df['_code_hash'].duplicated(keep=False)]
+    for code_hash, group in duplicate_rows.groupby('_code_hash'):
+        if group['vul'].nunique() != 1:
+            raise ValueError('Identical functions have contradictory vulnerability labels')
+        annotations = {cwe for value in group['cwe_id'] for cwe in parse_cwe_ids(value)}
+        df.loc[df['_code_hash'] == code_hash, 'cwe_id'] = ';'.join(sorted(annotations))
     df = df.drop_duplicates(subset="_code_hash", keep="first")
     df = df.drop(columns=["_code_hash"])
     after = len(df)
@@ -103,12 +110,18 @@ def _filter_projects_per_cwe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             "applied": False,
         }
 
-    pair_counts = df.groupby(["project", "cwe_id"]).size().reset_index(name="_count")
-    eligible = pair_counts[pair_counts["_count"] <= FUNC_MAX_PROJECT_ROWS][["project", "cwe_id"]]
-    removed_groups = pair_counts[pair_counts["_count"] > FUNC_MAX_PROJECT_ROWS]
-
+    membership = df[['project', 'cwe_id']].copy()
+    membership['_row_position'] = range(len(df))
+    membership['cwe_id'] = membership['cwe_id'].map(lambda value: parse_cwe_ids(value) or [''])
+    membership = membership.explode('cwe_id')
+    pair_counts = membership.groupby(['project', 'cwe_id']).size().reset_index(name='_count')
+    eligible = pair_counts[pair_counts['_count'] <= FUNC_MAX_PROJECT_ROWS]
+    removed_groups = pair_counts[pair_counts['_count'] > FUNC_MAX_PROJECT_ROWS]
+    # Every annotation participates in the cap; combining labels must not evade it.
+    excluded = membership.merge(removed_groups[['project', 'cwe_id']], on=['project', 'cwe_id'])
+    keep = ~pd.Series(range(len(df))).isin(excluded['_row_position']).to_numpy()
     before = len(df)
-    filtered = df.merge(eligible, on=["project", "cwe_id"], how="inner")
+    filtered = df.loc[keep].copy()
     logger.info(
         "Per-CWE project filter removed %d oversized (project, cwe) pairs, %d -> %d rows",
         len(removed_groups), before, len(filtered),
@@ -139,12 +152,12 @@ def _filter_token_length(df: pd.DataFrame) -> pd.DataFrame:
 
 def _select_labeled_rows(df: pd.DataFrame) -> pd.DataFrame:
     labeled_mask = df["cwe_id"].notna() & df["cwe_id"].astype(str).str.strip().ne("")
-    return df[labeled_mask].copy()
+    return df[labeled_mask | (df["vul"] == 0)].copy()
 
 
 def _drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Drop rows missing required fields before persisting the normalized subset."""
-    required_nonempty = ("project", "func_before", "cwe_id", "source_split")
+    required_nonempty = ("project", "func_before", "source_split")
     required_nonnull = ("sample_id", "vul")
 
     cleaned = df.copy()
@@ -197,8 +210,10 @@ def _generate_manifest(
 ) -> dict:
     # Per-CWE breakdown
     cwe_details = []
-    for cwe_id in sorted(subset["cwe_id"].unique()):
-        cwe_rows = subset[subset["cwe_id"] == cwe_id]
+    annotations = subset["cwe_id"].map(parse_cwe_ids)
+    all_cwes = {cwe for values in annotations for cwe in values}
+    for cwe_id in sorted(all_cwes):
+        cwe_rows = subset[annotations.map(lambda values: cwe_id in values)]
         cwe_details.append({
             "cwe_id": cwe_id,
             "total_rows": int(len(cwe_rows)),
@@ -235,7 +250,7 @@ def _generate_manifest(
             "benign": int((subset["vul"] == 0).sum()),
             "unique_cves": int(subset["cve_id"].nunique()),
             "unique_projects": int(subset["project"].nunique()),
-            "unique_cwes": int(subset["cwe_id"].nunique()),
+            "unique_cwes": _count_unique_cwes(subset),
         },
         "cwe_details": cwe_details,
         "top_cwes": top_cwes,
@@ -375,6 +390,7 @@ def extract_func_subset(
     else:
         logger.info("Loading %s training source", TRAINING_DATASET_NAME)
         df = load_primevul_training_data()
+    df["cwe_id"] = df["cwe_id"].fillna("")
     stage_summaries: list[dict] = []
 
     all_cwe = _select_labeled_rows(df)

@@ -1,4 +1,4 @@
-"""Lightweight graph encoder for function-level AST+CFG structure.
+"""Lightweight graph encoder for function-level AST structure.
 
 Maps node type IDs through an embedding table, applies 2-layer RGCN
 with relation-aware convolution, and produces a fixed-size graph vector
