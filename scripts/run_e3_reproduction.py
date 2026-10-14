@@ -31,21 +31,38 @@ def smoke_check(root, output, tokenizer, module_class, dataset_class, collate, f
     graph_ids = {int(path.stem) for path in (root / "processed/graph_artifacts").glob("*.pt")}
     train["has_graph"] = train["sample_id"].isin(graph_ids)
     selected = []
+    selected_ids = set()
     for has_graph in [True, False]:
         for label in [0, 1]:
-            candidates = train[(train["has_graph"] == has_graph) & (train["vul"] == label)]
-            selected.append(candidates.loc[candidates["func_before"].str.len().idxmin()])
-    subset = pd.DataFrame(selected).drop(columns="has_graph")
+            candidates = train[train["vul"] == label]
+            if has_graph:
+                candidates = candidates[candidates["has_graph"]]
+            else:
+                candidates = candidates[~candidates["sample_id"].isin(selected_ids)]
+            row = candidates.loc[candidates["func_before"].str.len().idxmin()].copy()
+            row["smoke_has_graph"] = has_graph
+            selected.append(row)
+            selected_ids.add(row["sample_id"])
+    selected_frame = pd.DataFrame(selected)
+    subset = selected_frame.drop(columns=["has_graph", "smoke_has_graph"])
     subset.to_csv(output / "smoke_subset.csv", index=False)
     splits = output / "smoke_splits"
     splits.mkdir()
     pd.DataFrame({"sample_id": subset["sample_id"], "split": "train"}).to_csv(splits / "assignments.csv", index=False)
+    smoke_graphs = output / "smoke_graph_artifacts"
+    smoke_graphs.mkdir()
+    for vocab in ["node_type_vocab.json", "edge_type_vocab.json"]:
+        (smoke_graphs / vocab).symlink_to(root / "processed/graph_artifacts" / vocab)
+    for _, row in selected_frame.iterrows():
+        if row["smoke_has_graph"]:
+            sample_id = str(row["sample_id"])
+            (smoke_graphs / f"{sample_id}.pt").symlink_to(root / "processed/graph_artifacts" / f"{sample_id}.pt")
     dataset = dataset_class("train", tokenizer=tokenizer, max_length=128,
                             subset_csv=output / "smoke_subset.csv", splits_dir=splits,
                             cwe_embeddings_dir=root / "processed/cwe_embeddings",
-                            use_graph=True, graph_artifacts_dir=root / "processed/graph_artifacts")
-    node_vocab = json.loads((root / "processed/graph_artifacts/node_type_vocab.json").read_text())
-    edge_vocab = json.loads((root / "processed/graph_artifacts/edge_type_vocab.json").read_text())
+                            use_graph=True, graph_artifacts_dir=smoke_graphs)
+    node_vocab = json.loads((smoke_graphs / "node_type_vocab.json").read_text())
+    edge_vocab = json.loads((smoke_graphs / "edge_type_vocab.json").read_text())
     module = module_class(graph_dim=64, num_node_types=len(node_vocab), num_relations=len(edge_vocab),
                           fusion_layers=fusion_layers, final_graph_concat=True)
     module.train()
