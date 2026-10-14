@@ -1,3 +1,5 @@
+> Retired historical specification. Per-function embedding caches and their generator have been removed. UniXcoder now encodes tokenized functions inside the model; see the [matching contract](../../../docs/MATCHING_CONTRACT.md).
+
 ## ADDED Requirements
 
 ### Requirement: UniXcoder mean-pooled embedding extraction

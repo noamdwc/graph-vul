@@ -1,3 +1,5 @@
+> Historical specification, superseded by the [matching contract](../../../docs/MATCHING_CONTRACT.md). The cached-embedding baseline APIs below have been retired; current graph-enabled experiments use the shared AST pipeline and fine-tuning dataset.
+
 ## MODIFIED Requirements
 
 ### Requirement: FuncBaselineModel supports optional graph embedding fusion

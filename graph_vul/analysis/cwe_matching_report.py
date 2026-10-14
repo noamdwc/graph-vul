@@ -1,178 +1,201 @@
-from __future__ import annotations
-
+"""Canonical report from hashed prediction exports; no notebook-derived metrics."""
+import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-import torch
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    average_precision_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 
-from graph_vul.config import MATCHING_LENGTH_BUCKET_EDGES, MATCHING_LENGTH_BUCKET_LABELS
+from graph_vul.artifacts import file_sha256, write_json
+from graph_vul.model.cwe_matching import parse_cwe_ids
 
 
-def binary_metrics_df(df: pd.DataFrame, y_true_col: str = "y_true") -> dict:
-    if df.empty:
-        return {
-            "accuracy": 0.0,
-            "precision": 0.0,
-            "recall": 0.0,
-            "f1": 0.0,
-            "num_samples": 0,
-            "num_vulnerable": 0,
-            "num_benign": 0,
-        }
-    y_true = df[y_true_col].astype(int).to_numpy()
-    y_pred = df["y_pred"].astype(int).to_numpy()
+def metrics(frame):
+    labels, predictions = frame["y_true"], frame["y_pred"]
+    benign = frame[labels == 0]
+    vulnerable = frame[labels == 1]
     return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "num_samples": int(len(df)),
-        "num_vulnerable": int(y_true.sum()),
-        "num_benign": int(len(df) - y_true.sum()),
+        "rows": len(frame),
+        "positive_support": int(labels.sum()),
+        "pr_auc": float(average_precision_score(labels, frame["margin"]))
+        if labels.sum()
+        else None,
+        "precision": float(precision_score(labels, predictions, zero_division=0)),
+        "recall": float(recall_score(labels, predictions, zero_division=0)),
+        "f1": float(f1_score(labels, predictions, zero_division=0)),
+        "benign_support": len(benign),
+        "false_positive_rate": float(benign["y_pred"].mean()) if len(benign) else None,
+        "annotated_vulnerable_support": int(
+            vulnerable["retrieval_hit_top1"].notna().sum()
+        ),
+        "retrieval_top1": float(vulnerable["retrieval_hit_top1"].mean())
+        if vulnerable["retrieval_hit_top1"].notna().any()
+        else None,
+        "retrieval_top3": float(vulnerable["retrieval_hit_top3"].mean())
+        if vulnerable["retrieval_hit_top3"].notna().any()
+        else None,
     }
 
 
-def per_cwe_metrics(df: pd.DataFrame, y_true_col: str = "y_true") -> pd.DataFrame:
-    if "cwe_id" not in df.columns or df.empty:
-        return pd.DataFrame()
-    rows = []
-    for cwe_id, group_df in df.groupby("cwe_id", dropna=False):
-        row = binary_metrics_df(group_df, y_true_col=y_true_col)
-        row["cwe_id"] = cwe_id
-        valid_retrieval = group_df["retrieval_hit_top1"].dropna() if "retrieval_hit_top1" in group_df.columns else pd.Series(dtype=float)
-        if not valid_retrieval.empty:
-            row["retrieval_top1"] = float(valid_retrieval.mean())
-            row["retrieval_top3"] = float(group_df["retrieval_hit_top3"].dropna().mean())
-        rows.append(row)
-    return pd.DataFrame(rows).sort_values(["f1", "num_samples", "cwe_id"], ascending=[True, False, True])
-
-
-def add_length_slice(df: pd.DataFrame) -> pd.DataFrame:
-    if "token_length" not in df.columns:
-        return df.copy()
-    bins = MATCHING_LENGTH_BUCKET_EDGES + [np.inf]
-    result = df.copy()
-    result["length_slice"] = pd.cut(
-        result["token_length"],
-        bins=bins,
-        labels=MATCHING_LENGTH_BUCKET_LABELS,
-        include_lowest=True,
-        right=False,
+def generate_report(manifest_paths, output_dir):
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=False)
+    summaries, per_cwe = [], []
+    preparation_hashes = None
+    candidates = None
+    checkpoints = {}
+    comparison_conditions = None
+    pilot = None
+    for manifest_path in map(Path, manifest_paths):
+        manifest = json.loads(manifest_path.read_text())
+        if manifest.get("contract") != 1:
+            raise ValueError("Historical exports cannot enter the canonical report")
+        preparation = manifest["provenance"]["preparation"]
+        is_pilot = bool(preparation.get("pilot", False))
+        if pilot is not None and is_pilot != pilot:
+            raise ValueError(
+                "Cannot mix pilot diagnostics with full experiment results"
+            )
+        pilot = is_pilot
+        hashes = preparation["hashes"]
+        if preparation_hashes is not None and preparation_hashes != hashes:
+            raise ValueError("Cannot compare runs with different preparation artifacts")
+        preparation_hashes = hashes
+        if candidates is not None and manifest["candidate_ids"] != candidates:
+            raise ValueError("Cannot compare different inference catalogs")
+        candidates = manifest["candidate_ids"]
+        config = manifest["resolved_config"]
+        provenance = manifest["provenance"]
+        conditions = {
+            "code_source": provenance["code"]["source_sha256"],
+            "cwe_embeddings": provenance["cwe_embeddings_sha256"],
+            "budget": provenance["budget"],
+            "training_controls": {
+                name: config[name]
+                for name in (
+                    "encoder_lr",
+                    "head_lr",
+                    "weight_decay",
+                    "head_dropout",
+                    "freeze_encoder_epochs",
+                    "freeze_encoder_fully",
+                    "unfreeze_encoder_lr",
+                    "matching_negatives_per_positive",
+                    "matching_loss_lambda",
+                    "matching_triplet_margin",
+                )
+            },
+        }
+        if comparison_conditions is not None and conditions != comparison_conditions:
+            raise ValueError(
+                "Cannot compare different code, embeddings or training budgets/settings"
+            )
+        comparison_conditions = conditions
+        run_key = (config["ablation_mode"], manifest["provenance"]["seed"])
+        checkpoint_identity = (
+            manifest["checkpoint_sha256"],
+            manifest["calibration_threshold"],
+        )
+        if run_key in checkpoints and checkpoints[run_key] != checkpoint_identity:
+            raise ValueError(
+                "Internal/external exports refer to different model or calibration"
+            )
+        checkpoints[run_key] = checkpoint_identity
+        for split, export in manifest["splits"].items():
+            path = manifest_path.parent / export["file"]
+            if file_sha256(path) != export["sha256"]:
+                raise ValueError(f"Prediction artifact changed: {path}")
+            frame = pd.read_csv(path)
+            if len(frame) != export["rows"] or not frame["sample_id"].is_unique:
+                raise ValueError(f"Export count/identity mismatch: {path}")
+            identity = {
+                "experiment": config["ablation_mode"],
+                "seed": manifest["provenance"]["seed"],
+                "checkpoint": manifest["checkpoint_sha256"],
+                "split": split,
+            }
+            summaries.append({**identity, "slice": "all", **metrics(frame)})
+            short = frame[frame["token_length"] <= 64]
+            if len(short):
+                summaries.append({**identity, "slice": "0-64 tokens", **metrics(short)})
+            annotations = frame["cwe_id"].apply(parse_cwe_ids)
+            for cwe in sorted({cwe for values in annotations for cwe in values}):
+                # Per-CWE binary metric compares its positive support with labeled benign rows.
+                selected = frame[
+                    (frame["y_true"] == 0)
+                    | annotations.apply(lambda values: cwe in values)
+                ]
+                per_cwe.append({**identity, "cwe": cwe, **metrics(selected)})
+    summary = pd.DataFrame(summaries)
+    if summary.duplicated(["experiment", "seed", "split", "slice"]).any():
+        raise ValueError("Duplicate run/split exports would double-count report rows")
+    summary.to_csv(output / "metrics.csv", index=False)
+    pd.DataFrame(per_cwe).to_csv(output / "per_cwe.csv", index=False)
+    # Shared-seed comparison: show all runs and mean/std, never silently claim three completed seeds.
+    aggregate = (
+        summary.groupby(["experiment", "split", "slice"])
+        .agg(
+            seeds=("seed", "nunique"),
+            f1_mean=("f1", "mean"),
+            f1_std=("f1", "std"),
+            pr_auc_mean=("pr_auc", "mean"),
+            pr_auc_std=("pr_auc", "std"),
+        )
+        .reset_index()
     )
-    return result
+    aggregate.to_csv(output / "seed_summary.csv", index=False)
+    columns = [
+        "experiment",
+        "seed",
+        "split",
+        "slice",
+        "rows",
+        "positive_support",
+        "pr_auc",
+        "precision",
+        "recall",
+        "f1",
+        "false_positive_rate",
+        "retrieval_top1",
+        "retrieval_top3",
+    ]
+    lines = [
+        "# Graph-Vul integration pilot: execution diagnostics"
+        if pilot
+        else "# Graph-Vul matching results",
+        "Pilot metrics verify a bounded workflow run; they do not estimate model performance."
+        if pilot
+        else "",
+        "",
+        "Generated only from versioned, hash-verified prediction artifacts. Unseen splits are overlapping diagnostic slices; row counts are not summed across them.",
+        "",
+        "| " + " | ".join(columns) + " |",
+        "| " + " | ".join(["---"] * len(columns)) + " |",
+    ]
+    for row in summary[columns].itertuples(index=False, name=None):
+        values = [
+            f"{value:.4f}"
+            if isinstance(value, float) and pd.notna(value)
+            else str(value)
+            for value in row
+        ]
+        lines.append("| " + " | ".join(values) + " |")
+    (output / "report.md").write_text("\n".join(lines) + "\n")
+    write_json(
+        output / "sources.json",
+        {str(path): file_sha256(path) for path in manifest_paths},
+    )
 
 
-def length_slice_metrics(df: pd.DataFrame, y_true_col: str = "y_true") -> pd.DataFrame:
-    bucketed = add_length_slice(df)
-    if "length_slice" not in bucketed.columns:
-        return pd.DataFrame()
-    rows = []
-    for length_slice, group_df in bucketed.groupby("length_slice", dropna=False, observed=False):
-        if pd.isna(length_slice):
-            continue
-        row = binary_metrics_df(group_df, y_true_col=y_true_col)
-        row["length_slice"] = str(length_slice)
-        valid_retrieval = group_df["retrieval_hit_top1"].dropna() if "retrieval_hit_top1" in group_df.columns else pd.Series(dtype=float)
-        if not valid_retrieval.empty:
-            row["retrieval_top1"] = float(valid_retrieval.mean())
-            row["retrieval_top3"] = float(group_df["retrieval_hit_top3"].dropna().mean())
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def candidate_cwe_matrix(cwe_store, model, device: torch.device) -> tuple[list[str], torch.Tensor]:
-    candidate_ids = cwe_store.available_cwe_ids()
-    if not candidate_ids:
-        return [], torch.zeros(0, model.cwe_projection.out_features, device=device)
-    candidate_embeddings = cwe_store.stack(candidate_ids, device=device)
-    with torch.inference_mode():
-        candidate_match = model.project_cwe_embeddings(candidate_embeddings)
-    return candidate_ids, candidate_match
-
-
-def retrieval_columns(
-    function_match: torch.Tensor,
-    candidate_ids: list[str],
-    candidate_match: torch.Tensor,
-    true_cwe_ids: list[str],
-) -> dict[str, list]:
-    n = function_match.shape[0]
-    if n == 0 or not candidate_ids or candidate_match.numel() == 0:
-        return {
-            "retrieved_cwe_top1": [None] * n,
-            "retrieval_rank": [None] * n,
-            "retrieval_hit_top1": [None] * n,
-            "retrieval_hit_top3": [None] * n,
-        }
-    scores = torch.matmul(function_match, candidate_match.T)
-    topk = torch.topk(scores, k=min(3, scores.shape[1]), dim=1)
-    rank_indices = torch.argsort(scores, dim=1, descending=True)
-    candidate_index = {cwe_id: idx for idx, cwe_id in enumerate(candidate_ids)}
-
-    retrieved_top1: list[str | None] = []
-    retrieval_rank: list[int | None] = []
-    retrieval_hit_top1: list[int | None] = []
-    retrieval_hit_top3: list[int | None] = []
-    for row_idx, true_cwe_id in enumerate(true_cwe_ids):
-        retrieved_top1.append(candidate_ids[int(topk.indices[row_idx, 0])])
-        true_idx = candidate_index.get(str(true_cwe_id))
-        if true_idx is None:
-            retrieval_rank.append(None)
-            retrieval_hit_top1.append(None)
-            retrieval_hit_top3.append(None)
-            continue
-        ordered = rank_indices[row_idx].tolist()
-        rank = ordered.index(true_idx) + 1
-        retrieval_rank.append(rank)
-        retrieval_hit_top1.append(int(rank == 1))
-        retrieval_hit_top3.append(int(rank <= 3))
-    return {
-        "retrieved_cwe_top1": retrieved_top1,
-        "retrieval_rank": retrieval_rank,
-        "retrieval_hit_top1": retrieval_hit_top1,
-        "retrieval_hit_top3": retrieval_hit_top3,
-    }
-
-
-def summarize_predictions(df: pd.DataFrame, y_true_col: str = "y_true") -> tuple[dict, pd.DataFrame, pd.DataFrame]:
-    metrics = binary_metrics_df(df, y_true_col=y_true_col)
-    if "retrieval_hit_top1" in df.columns:
-        top1 = df["retrieval_hit_top1"].dropna()
-        top3 = df["retrieval_hit_top3"].dropna()
-        metrics["retrieval_top1"] = float(top1.mean()) if not top1.empty else None
-        metrics["retrieval_top3"] = float(top3.mean()) if not top3.empty else None
-    return metrics, per_cwe_metrics(df, y_true_col=y_true_col), length_slice_metrics(df, y_true_col=y_true_col)
-
-
-def write_summary_artifacts(
-    df: pd.DataFrame,
-    output_dir: str | Path,
-    prefix: str,
-    *,
-    y_true_col: str = "y_true",
-) -> dict:
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    metrics, per_cwe_df, length_df = summarize_predictions(df, y_true_col=y_true_col)
-
-    metrics_path = output_path / f"{prefix}_metrics.json"
-    with metrics_path.open("w") as handle:
-        json.dump(metrics, handle, indent=2)
-
-    if not per_cwe_df.empty:
-        per_cwe_df.to_csv(output_path / f"per_cwe_metrics_{prefix}.csv", index=False)
-    if not length_df.empty:
-        length_df.to_csv(output_path / f"length_slice_metrics_{prefix}.csv", index=False)
-
-    lines = [f"# {prefix} summary", "", "## Overall", ""]
-    for key, value in metrics.items():
-        lines.append(f"- {key}: {value}")
-    if not per_cwe_df.empty:
-        lines.extend(["", "## Worst CWE F1", "", per_cwe_df.head(10).to_string(index=False)])
-    if not length_df.empty:
-        lines.extend(["", "## Length slices", "", length_df.to_string(index=False)])
-    (output_path / f"{prefix}_summary.md").write_text("\n".join(lines))
-    return metrics
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--manifests", dest="manifest_paths", nargs="+", type=Path, required=True
+    )
+    parser.add_argument("--output-dir", type=Path, required=True)
+    generate_report(**vars(parser.parse_args()))

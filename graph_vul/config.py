@@ -106,25 +106,18 @@ CODE_MODEL_NAME = UNIXCODER_MODEL_NAME
 CODE_MODEL_REVISION = UNIXCODER_MODEL_REVISION
 CODE_EMBEDDING_DIM = UNIXCODER_EMBEDDING_DIM
 
-# Function baseline paths
+# Function preparation paths
 FUNC_SUBSET_CSV = DATA_DIR / "func_subset.csv"
 FUNC_SUBSET_MANIFEST = DATA_DIR / "func_subset_manifest.json"
 FUNC_SUBSET_REPORT = DATA_DIR / "func_subset_report.md"
-FUNC_EMBEDDINGS_DIR = PROCESSED_DIR / "func_embeddings"
 FUNC_SPLITS_DIR = DATA_DIR / "func_splits"
-FUNC_CHECKPOINT_PATH = DATA_DIR / "func_baseline_model.ckpt"
 
-# Function baseline subset extraction
+# Function subset extraction
 FUNC_MAX_PROJECT_ROWS = 2000
 
-# Function baseline MLP
+# Function pair-head MLP
 FUNC_MLP_HIDDEN_DIM = 128
 FUNC_MLP_DROPOUT = 0.3
-
-# Function baseline training
-FUNC_BATCH_SIZE = 64
-FUNC_LEARNING_RATE = 1e-3
-FUNC_NUM_EPOCHS = 50
 
 # UniXcoder fine-tuning
 FINETUNE_ENCODER_LR = 2e-5
