@@ -39,7 +39,7 @@ Machine-readable evidence: `preparation_audit.json`, `feature_audit.json`, and `
 
 A real UniXcoder CPU smoke run used both labels, present and missing graphs, all 12 fusion layers, and one optimizer step. Its loss and inference scores were finite; graph-encoder gradients were nonzero. It used four functions and 128-token sequences and does not estimate performance. Evidence is in `smoke-01/smoke.json` and `smoke-01/run.json`.
 
-Python scripts and notebook cells parse successfully. The local runtime has no CUDA GPU, so full training has not been executed.
+Python scripts and notebook cells parse successfully. The full GPU run subsequently completed on Colab; verified results are recorded below.
 
 ## Run E3 on Colab
 
@@ -75,4 +75,59 @@ python scripts/rebuild_e3_features.py \
   --output /Users/noamc/repos/graph-vul-appsflyer/data/e3-reproduction-NEW
 ```
 
-The recovery scripts expect the two downloaded ZIP names used on 14 October. The existing preparation already includes its hash manifest and Colab package; rebuilding again is unnecessary for the pending GPU run.
+The recovery scripts expect the two downloaded ZIP names used on 14 October. The existing preparation already includes its hash manifest and Colab package; rebuilding again is unnecessary for further runs using this preparation.
+
+## Completed Colab run — 14 October 2026
+
+Run `E3_all_layers-20261014T091812Z` completed with return code 0 on an NVIDIA A100-SXM4-40GB. Its source revision is `acaab932945c41eb09a48b9f680b4fcfb5f9a291`, seed 42. All 5,413 prepared file hashes verify, and the run's preparation-manifest hash matches the local preparation. Every exported evaluation function, annotation, label, and split matches. Predictions agree with the fixed 0.5 threshold and contain finite scores and unique sample IDs.
+
+The selected checkpoint is epoch 9 (zero-based), global step 670: the tenth epoch of the configured budget. Its callback selected on validation F1, with best score **0.877980**. The checkpoint contains all 12 fusion layers, late graph concatenation, 9,678 node types, and two graph relations. Its SHA-256 is `4673f949d91c44e4896bff0e8405f9c53974b92855ea878d6ca8a20eae5c85b8`.
+
+| Cohort | Rows | Positive support | F1 | Precision | Recall | Benign false-positive rate | PR-AUC (average precision) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Test | 4,727 | 111 | 0.867925 | 0.910891 | 0.828829 | 0.001950 | 0.868150 |
+| Unseen test | 14,430 | 870 | 0.886573 | 0.950066 | 0.831034 | 0.002802 | 0.926603 |
+
+Confusion counts: test TP=92, FP=9, TN=4,607, FN=19; unseen test TP=723, FP=38, TN=13,522, FN=147. These are fresh, single-seed results on reconstructed features for CWE-conditioned classification. They do not establish a graph-fusion improvement over a baseline or exact reproduction of the March graph inputs.
+
+The downloaded `metrics.json` agrees with recomputed F1/precision/recall but reports NaN for ranking/calibration metrics. The historical helper at `graph_vul/analysis/post_experiment_analysis.py:315` checks `score.notna().nunique()` rather than uniqueness of the scores themselves. Its complete finite score columns therefore skip those computations. PR-AUC, ROC-AUC, and Brier score were recalculated directly from the exported scores in `runs/E3_all_layers-20261014T091812Z/audit.json`. This is a reporting issue; no additional training is needed. The original downloaded files and extracted raw results are preserved.
+
+The executed notebook contains a successful subprocess return and final metrics table. It does not retain the complete epoch-by-epoch child-process logs. Installation reported dependency conflicts with unused Colab packages, but training and export completed successfully.
+
+A defensible CV statement:
+
+> Built a CWE-conditioned vulnerability classifier combining pretrained code representations with AST/CFG graph fusion; achieved 0.887 F1 and 0.927 PR-AUC on 14,430 functions from held-out projects.
+
+## Short-function check — 14 October 2026
+
+The historical short-function bucket includes exported `token_length` from 0 through 64, inclusive. Length is the inference attention-mask sum, including special tokens; predictions use threshold 0.5. Fresh and original E3 exports have identical sample IDs, token lengths, labels, and short-function membership.
+
+| Cohort | Short functions | Vulnerable functions | Original E3 F1 | Fresh E3 F1 |
+|---|---:|---:|---:|---:|
+| Test | 1,054 | 6 | 0.285714 | 0.285714 |
+| Unseen test | 1,938 | 19 | 0.647059 | 0.400000 |
+
+For unseen short functions, original E3 has TP=11, FP=4, TN=1,915, FN=8. Fresh E3 has TP=6, FP=5, TN=1,914, FN=13: precision 0.545455, recall 0.315789. These metrics are independently recomputed from both prediction CSVs. They describe different feature preparations and do not isolate a causal effect of a model change. The short cohort has only 19 positive examples.
+
+Two historical summaries explain the earlier improvement figures:
+
+| Historical comparison | Unseen short F1 | Evidence status |
+|---|---:|---|
+| E2 last-four-layer fusion → E3 all-layer fusion | 0.411765 → 0.647059 | `outputs/fusion_ablation_results.csv`; original E3 predictions verified, E2 predictions not recovered |
+| E0 late-only fusion → E6 gated concat adapter | 0.457143 → 0.744186 | Main repository `outputs/fusion_method_ablation_detailed_results.csv`, introduced at `3336331`; E0/E6 predictions not recovered |
+
+The 0.457→0.744 figure belongs to the later E6 experiment, not the E3 architecture selected at `f9867245`. Neither historical baseline can be compared directly with the fresh E3 run because original feature identity is unavailable. A CV claim that the reproduced model improved short-function F1 is currently unsupported. To test the selected E3 depth change, the smallest additional comparison is E2 on the exact reconstructed preparation, with the same seed, training budget, checkpoint selection, threshold, and cohort. No additional training was launched for this check.
+
+Machine-readable evidence, source hashes, counts, and cohort checks are saved in `runs/E3_all_layers-20261014T091812Z/short_function_audit.json`. Original downloaded artifacts remain unchanged.
+
+## E2 controlled baseline on Colab
+
+Run `notebooks/colab_e2_baseline.ipynb` from `portfolio/appsflyer` in a fresh GPU runtime, preferably the same A100 class used for E3. It reuses the existing input ZIP and completed Drive folder `runs/E3_all_layers-20261014T091812Z`; no preparation notebooks or E3 rerun are needed.
+
+The hypothesis is that all-layer fusion yields higher unseen short-function F1 than last-four-layer fusion. E2 changes only fusion layers to `[8, 9, 10, 11]`; it retains late graph concatenation, seed 42, ten epochs, batch 64, accumulation 8, encoder/head learning rates, validation-F1 checkpoint selection, and threshold 0.5. Inputs, encoder revision, recorded runtime versions, and model/data/training code are checked against the completed E3 provenance before training. Fresh E3 short unseen-test F1 is already 0.400; the comparison cannot establish a fresh E3 score of 0.7.
+
+The shared runner defaults to E3 for existing callers. E2 requires `--experiment E2 --reference-run PATH/TO/E3/run.json`. CPU smoke mode exercises the requested fusion depth without requiring a comparable GPU runtime. Full E2 starts from the pinned pretrained encoder, not the E3 checkpoint.
+
+The notebook writes a fresh `runs/E2_last4-YYYYMMDDTHHMMSSZ` directory, a sibling `E2_last4-YYYYMMDDTHHMMSSZ-training.log`, and `comparison.json` in the run directory. It verifies paired sample IDs, labels, and token lengths before comparing all functions and the inclusive 0–64-token bucket. Return the entire E2 directory, training log, and executed notebook. The primary comparison is E3 minus E2 short unseen-test F1; positive values support the hypothesis for this seed and cohort. Overall F1/precision/recall and confusion counts provide context. With only 19 vulnerable short functions, a positive delta alone does not establish a stable improvement across seeds or populations.
+
+Local validation: the E2 CPU smoke performed one optimizer step on four real functions with both labels and present/missing graphs; loss 0.649392, finite inference scores, and 576 nonzero graph-embedding gradient entries. Its evidence is retained in `smoke-e2-01/`. Runner and notebook Python cells parse. The comparison cell was executed against identical reference predictions and returned the expected zero delta, with exact short-function support (1,938/19). Matching reference provenance is accepted; altered input manifest, runtime versions, seed, or reference fusion depth are rejected. These are execution and comparison checks, not full E2 performance results.

@@ -1,4 +1,4 @@
-"""Run only the historical all-layer E3 architecture on reconstructed inputs."""
+"""Run historical E3 or its last-four-layer E2 baseline on reconstructed inputs."""
 import argparse
 import hashlib
 import json
@@ -22,7 +22,7 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def smoke_check(root, output, tokenizer, module_class, dataset_class, collate):
+def smoke_check(root, output, tokenizer, module_class, dataset_class, collate, fusion_layers):
     """Exercise real code, both labels, and present/missing graphs on CPU."""
     subset = pd.read_csv(root / "func_subset.csv")
     assignments = pd.read_csv(root / "func_splits/assignments.csv")
@@ -47,7 +47,7 @@ def smoke_check(root, output, tokenizer, module_class, dataset_class, collate):
     node_vocab = json.loads((root / "processed/graph_artifacts/node_type_vocab.json").read_text())
     edge_vocab = json.loads((root / "processed/graph_artifacts/edge_type_vocab.json").read_text())
     module = module_class(graph_dim=64, num_node_types=len(node_vocab), num_relations=len(edge_vocab),
-                          fusion_layers=list(range(12)), final_graph_concat=True)
+                          fusion_layers=fusion_layers, final_graph_concat=True)
     module.train()
     batch = collate([dataset[index] for index in range(len(dataset))])
     optimizers, _ = module.configure_optimizers()
@@ -76,16 +76,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--experiment", choices=("E2", "E3"), default="E3")
+    parser.add_argument("--reference-run", type=Path, help="Completed E3 run.json; required for full E2 training")
     parser.add_argument("--smoke", action="store_true", help="Four real examples and one optimizer step on CPU; no performance estimate")
     args = parser.parse_args()
+    if args.experiment == "E2" and not args.smoke and args.reference_run is None:
+        parser.error("E2 requires --reference-run pointing to the completed E3 run.json")
+    fusion_layers = list(range(8, 12)) if args.experiment == "E2" else list(range(12))
+    run_tag = "E2_last4" if args.experiment == "E2" else "E3_all_layers"
     root, output = args.data_root.resolve(), args.output_dir.resolve()
     manifest = json.loads((root / "reconstruction.json").read_text())
     for name, digest in manifest["sha256"].items():
         if sha256(root / name) != digest:
             raise ValueError(f"Reconstructed input changed: {name}")
     if not args.smoke and not torch.cuda.is_available():
-        raise RuntimeError("Full E3 training requires a CUDA GPU; use the E3 Colab notebook")
-    output.mkdir(parents=True, exist_ok=False)
+        raise RuntimeError("Full training requires a CUDA GPU; use the Colab notebook")
     os.environ.setdefault("WANDB_MODE", "disabled")
     torch.set_num_threads(4)
     repo = Path(__file__).resolve().parents[1]
@@ -110,28 +115,45 @@ def main():
     from graph_vul.dataset.func_finetune_dataset import FuncFinetuneDataset, finetune_graph_collate
 
     pl.seed_everything(42, workers=True)
-    provenance = {"kind": "reconstructed_E3_inputs", "historical_graph_identity_verified": False,
+    provenance = {"kind": "reconstructed_E3_inputs", "experiment": run_tag, "historical_graph_identity_verified": False,
                   "preparation_manifest_sha256": sha256(root / "reconstruction.json"),
                   "git_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
                   "encoder_revision": MODEL_REVISION,
                   "versions": {"torch": torch.__version__, "transformers": transformers.__version__, "lightning": pl.__version__, "pandas": pd.__version__},
                   "configuration": {"seed": 42, "epochs": 10, "batch_size": 64, "grad_accum": 8,
                                     "encoder_lr": 2e-5, "head_lr": 1e-3, "use_graph": True,
-                                    "fusion_layers": list(range(12)), "final_graph_concat": True,
+                                    "fusion_layers": fusion_layers, "final_graph_concat": True,
                                     "selection": "val_f1", "threshold": 0.5}}
+    if args.experiment == "E2" and not args.smoke:
+        reference = json.loads(args.reference_run.read_text())
+        for field in ("preparation_manifest_sha256", "encoder_revision", "versions"):
+            if provenance[field] != reference[field]:
+                raise ValueError(f"E2/E3 comparison mismatch: {field}")
+        if reference["configuration"]["fusion_layers"] != list(range(12)):
+            raise ValueError("Reference run must be all-layer E3")
+        expected = reference["configuration"].copy()
+        expected["fusion_layers"] = fusion_layers
+        if provenance["configuration"] != expected:
+            raise ValueError("E2/E3 training settings differ beyond fusion layers")
+        # Runner/report changes are allowed; model, data, and training code must match.
+        subprocess.run(["git", "diff", "--exit-code", reference["git_revision"], "HEAD", "--", "graph_vul"],
+                       cwd=repo, check=True)
+        provenance["reference_E3"] = {"run_json_sha256": sha256(args.reference_run),
+                                      "git_revision": reference["git_revision"]}
+    output.mkdir(parents=True, exist_ok=False)
     (output / "run.json").write_text(json.dumps(provenance, indent=2) + "\n")
     tokenizer = AutoTokenizer.from_pretrained(config.UNIXCODER_MODEL_NAME)
     if args.smoke:
-        result = smoke_check(root, output, tokenizer, FuncFinetuneLitModule, FuncFinetuneDataset, finetune_graph_collate)
+        result = smoke_check(root, output, tokenizer, FuncFinetuneLitModule, FuncFinetuneDataset, finetune_graph_collate, fusion_layers)
         (output / "smoke.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result, indent=2))
         return
 
     from graph_vul.train_finetune import train
     train(num_epochs=10, batch_size=64, encoder_lr=2e-5, head_lr=1e-3, grad_accum=8,
-          seed=42, use_graph=True, fusion_layers=list(range(12)), final_graph_concat=True,
+          seed=42, use_graph=True, fusion_layers=fusion_layers, final_graph_concat=True,
           checkpoint_path=output / "func_finetune_model.ckpt", metrics_path=output / "training_metrics.json",
-          run_tag="E3_all_layers_reconstructed")
+          run_tag=run_tag + "_reconstructed")
     from graph_vul.export_finetune_predictions import export_predictions
     export_predictions(checkpoint_path=output / "func_finetune_model.ckpt", output_dir=output / "predictions",
                        splits=("test", "unseen_test"), batch_size=64, threshold=0.5,
