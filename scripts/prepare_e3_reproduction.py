@@ -90,10 +90,13 @@ def main():
               "evaluation_identity": compatibility,
               "reference_sha256": {name: file_hash(reference / name) for name in names}}
     (args.output / "preparation_audit.json").write_text(json.dumps(report, indent=2) + "\n")
+    evaluation_identity_verified = not any(
+        value for cohort in compatibility.values() for value in cohort["discrepancies"].values()
+    )
     manifest = {"kind": "reconstructed_E3_inputs",
                 "historical_commit": "f9867245e2cab78a79a7b617a346443e54d0348a",
                 "source_csv_byte_identical": source_md5 == "95436ff6b6eb8b95c44f42dee5fe7541",
-                "evaluation_identity_verified": True,
+                "evaluation_identity_verified": evaluation_identity_verified,
                 "historical_graph_identity_verified": False,
                 "subset_rows": len(subset),
                 "split_rows": assignments["split"].value_counts().to_dict(),
@@ -101,7 +104,7 @@ def main():
                            for path in prepared.rglob("*")
                            if path.is_file() and path.name != "reconstruction.json"}}
     (prepared / "reconstruction.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    if any(value for cohort in compatibility.values() for value in cohort["discrepancies"].values()):
+    if not evaluation_identity_verified:
         raise ValueError("Rebuilt preparation does not reproduce E3's evaluation identities; inspect preparation_audit.json")
 
 
